@@ -16,3 +16,10 @@ pip install matplotlib
 pip install tensorboardX
 pip install PyWavelets
 ```
+
+## Train & Test
+EDSR-baseline-HIIF
+```
+python train.py --config configs/train-div2k/train_edsr-baseline-hiif.yam
+bash ./scripts/test-div2k-fast.sh ./save/edsr_baseline_hiif.pth 0
+```
