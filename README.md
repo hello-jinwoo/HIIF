@@ -1,4 +1,4 @@
-# HIIF
+# HIIF (CVPR2025)
 ```
 conda create -n hiif python=3.10.14
 conda init
