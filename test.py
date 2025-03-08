@@ -160,21 +160,6 @@ if __name__ == '__main__':
     loader = DataLoader(dataset, batch_size=spec['batch_size'],
                         num_workers=0, pin_memory=True)
 
-    # state_dict = torch.load(args.model)['model']
-    #
-    # state_dict['name'] = 'hiif'
-    # sv_file = {
-    #     'model': state_dict
-    # }
-    # torch.save(sv_file, 'edsr_hiif.pth')
-    #
-    # new_sd = OrderedDict()
-    # for key, value in state_dict['sd'].items():
-    #     new_key = key.replace('module.', '')
-    #     new_sd[new_key] = value
-    # state_dict['sd'] = new_sd
-    # model = models.make(state_dict, load_sd=True).cuda()
-
 
     model_spec = torch.load(args.model)['model']
     model = models.make(model_spec, load_sd=True).cuda()
