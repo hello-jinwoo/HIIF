@@ -14,7 +14,6 @@ pip install pytorch_wavelets
 pip install opencv-python
 pip install matplotlib
 pip install tensorboardX
-pip install PyWavelets
 ```
 
 ## Train & Test
