@@ -2,7 +2,6 @@ import argparse
 import os
 import math
 from functools import partial
-import torch.nn.functional as F
 import yaml
 import torch
 from torch.utils.data import DataLoader
@@ -11,8 +10,6 @@ from tqdm import tqdm
 import datasets
 import models
 import utils
-from collections import OrderedDict
-from torchvision import transforms
 from time import time
 
 
@@ -159,7 +156,6 @@ if __name__ == '__main__':
     dataset = datasets.make(spec['wrapper'], args={'dataset': dataset})
     loader = DataLoader(dataset, batch_size=spec['batch_size'],
                         num_workers=0, pin_memory=True)
-
 
     model_spec = torch.load(args.model)['model']
     model = models.make(model_spec, load_sd=True).cuda()

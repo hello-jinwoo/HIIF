@@ -55,17 +55,17 @@ echo 'x12*' &&
 python test.py --config ./configs/hiiftest/test-fast-urban100-12.yaml --fast True --model $1 --gpu $2 &&
 
 
-#echo 'manga109' &&
-#echo 'x2' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-2.yaml --fast True --model $1 --gpu $2 &&
-#echo 'x3' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-3.yaml --fast True --model $1 --gpu $2 &&
-#echo 'x4' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-4.yaml --fast True --model $1 --gpu $2 &&
-#echo 'x6*' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-6.yaml --fast True --model $1 --gpu $2 &&
-#echo 'x8*' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-8.yaml --fast True --model $1 --gpu $2 &&
-#echo 'x12*' &&
-#python test.py --config ./configs/hiiftest/test-fast-manga109-12.yaml --fast True --model $1 --gpu $2 &&
+echo 'manga109' &&
+echo 'x2' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-2.yaml --fast True --model $1 --gpu $2 &&
+echo 'x3' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-3.yaml --fast True --model $1 --gpu $2 &&
+echo 'x4' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-4.yaml --fast True --model $1 --gpu $2 &&
+echo 'x6*' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-6.yaml --fast True --model $1 --gpu $2 &&
+echo 'x8*' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-8.yaml --fast True --model $1 --gpu $2 &&
+echo 'x12*' &&
+python test.py --config ./configs/hiiftest/test-fast-manga109-12.yaml --fast True --model $1 --gpu $2 &&
 true
