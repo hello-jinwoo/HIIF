@@ -1,4 +1,4 @@
-# HIIF (CVPR2025) [Paper](https://arxiv.org/pdf/2412.03748)]
+# HIIF (CVPR2025) [[Paper](https://arxiv.org/pdf/2412.03748)]
 <p align="center">
     <img src="assets/HIIF_archi.png" style="border-radius: 15px">
 </p>
