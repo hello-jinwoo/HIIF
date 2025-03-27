@@ -20,7 +20,7 @@ pip install matplotlib
 pip install tensorboardX
 ```
 
-## Train & Test
+## 📑 Train & Test
 EDSR-baseline-HIIF
 ```
 python train.py --config configs/train-div2k/train_edsr-baseline-hiif.yam
