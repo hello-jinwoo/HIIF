@@ -2,6 +2,7 @@
 <p align="center">
     <img src="assets/HIIF_archi_CMR.pdf" style="border-radius: 15px">
 </p>
+
 ```
 conda create -n hiif python=3.10.14
 conda init
