@@ -34,41 +34,37 @@ bash ./scripts/test-div2k-fast.sh ./save/edsr_baseline_hiif.pth 0
 
 We evaluate the performance of **HIIF** on multiple benchmarks against recent state-of-the-art continuous image super-resolution methods under both **in-distribution** and **out-of-distribution** scales.
 
-### 🔍 Evaluation Datasets
 
 
-All results are reported in terms of **PSNR (dB)**. For each scale and dataset:
-- The **best performance** is highlighted in **red**.
-- The **second-best performance** is highlighted in **blue**.
-- `-` denotes unavailable results.
 
----
+## 🔍 Qualitative Results
+<p align="center">
+  <img width="800" src="asset/vs1.png">
+</p>
 
-### 📈 Table 1: Results on DIV2K and Set5
+<p align="center">
+  <img width="800" src="asset/vs2.png">
+</p>
 
-| Dataset | Upscaling Factors | Evaluated Models |
-|--------|--------------------|------------------|
-| DIV2K | ×2, ×3, ×4 (in-distribution), ×6–×30 (out-of-distribution) | Bicubic, MetaSR, LIIF, LTE, CLIT, CiaoSR, SRNO, **HIIF (Ours)** |
-| Set5 | ×2 to ×12 | Same as above |
+<p align="center">
+  <img width="800" src="asset/vs3.png">
+</p>
 
-📌 **HIIF consistently outperforms previous methods across all scales**, especially under extreme out-of-distribution settings.
+<p align="center">
+  <img width="800" src="asset/vs4.png">
+</p>
 
-📷 *See [Table 1](#tbl:results1) in the paper for detailed numbers.*
+<p align="center">
+  <img width="800" src="asset/vs5.png">
+</p>
 
----
 
-### 📈 Table 2: Results on Set14, BSD100, and Urban100
+## 🔍 Arbitrary-Scale demo
+<p align="center">
+  <img width="800" src="asset/vs6.png">
+</p>
 
-| Dataset | Upscaling Factors | Evaluated Models |
-|--------|--------------------|------------------|
-| Set14, BSD100, Urban100 | ×2 to ×12 | Same as Table 1 |
 
-📌 **HIIF achieves state-of-the-art PSNR across all datasets and settings**, demonstrating strong generalization to diverse content and unseen scales.
 
-📷 *See [Table 2](#tbl:results2) in the paper for full breakdown.*
-
----
-
-📌 **Note**: To reproduce these results, follow the training and evaluation instructions described [here](#training-and-evaluation) and set `--eval_type=benchmark`.
 
 ---
