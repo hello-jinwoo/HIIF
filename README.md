@@ -20,6 +20,19 @@ pip install matplotlib
 pip install tensorboardX
 ```
 
+## <a name="cite"></a> Citation
+
+Please cite us if our work is useful for your research.
+
+```
+@article{jiang2024hiif,
+  title={HIIF: Hierarchical Encoding based Implicit Image Function for Continuous Super-resolution},
+  author={Jiang, Yuxuan and Kwan, Ho Man and Peng, Tianhao and Gao, Ge and Zhang, Fan and Zhu, Xiaoqing and Sole, Joel and Bull, David},
+  journal={arXiv preprint arXiv:2412.03748},
+  year={2024}
+}
+```
+
 ## 📑 Train & Test
 EDSR-baseline-HIIF
 ```
