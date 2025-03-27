@@ -43,9 +43,13 @@ bash ./scripts/test-div2k-fast.sh ./save/edsr_baseline_hiif.pth 0
 
 ---
 
-## 📊 Quantitative Results
-
-We evaluate the performance of **HIIF** on multiple benchmarks against recent state-of-the-art continuous image super-resolution methods under both **in-distribution** and **out-of-distribution** scales.
+## 📊 Model Summary
+DIV2K pre-trained model
+Model|Download
+:-:|:-:
+edsr_hiif|[Google Drive](https://drive.google.com/file/d/1XoEXicdiGMMnHKH0Im8rJYXijjywK1K9/view?usp=sharing)
+rdf_hiif|[Google Drive](https://drive.google.com/file/d/1-S5bE4f-emtWw1VMCMuWHqZu8IjKaIwS/view?usp=sharing)
+swinir_hiif|[Google Drive](https://drive.google.com/file/d/13wrPTcOqLnNDm9c14h1uPTQEWjOzQ9cd/view?usp=sharing)
 
 
 
