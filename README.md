@@ -77,6 +77,10 @@ swinir_hiif|[Google Drive](https://drive.google.com/file/d/13wrPTcOqLnNDm9c14h1u
 
 
 ## 🔍 Arbitrary-Scale demo
+```
+python demo.py --input_folder [LR path] --output_folder [Output path] --model ./save/edsr_hiif.pth --scale 12.34
+```
+
 <p align="center">
   <img width="800" src="asset/vs6.png">
 </p>
