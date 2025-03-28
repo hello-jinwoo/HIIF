@@ -34,7 +34,7 @@ Please cite us if our work is useful for your research.
 ```
 
 ## 📑 Train & Test
-EDSR-baseline-HIIF
+EDSR-HIIF
 ```
 python train.py --config configs/train-div2k/train_edsr-baseline-hiif.yam
 bash ./scripts/test-div2k-fast.sh ./save/edsr_baseline_hiif.pth 0
