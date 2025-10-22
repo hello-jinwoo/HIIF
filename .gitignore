@@ -1,0 +1,15 @@
+.claude/
+docs/
+
+load/
+save/
+
+# Python cache files
+**/__pycache__/
+*/__pycache__/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd

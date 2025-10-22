@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.1+cu118
+torchvision==0.16.1+cu118
+torchaudio==2.1.1+cu118
+numpy<2.0.0
+tqdm
+einops
+typing_extensions
+imageio
+timm
+pytorch_wavelets
+opencv-python
+matplotlib
+tensorboardX
