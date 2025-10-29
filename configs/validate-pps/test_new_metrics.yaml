@@ -1,0 +1,97 @@
+# Quick test config for new validation metrics
+# Tests with 1 user, very fast iterations
+
+# Encoder checkpoint from training
+encoder_checkpoint: ./save/train_hiif_pps_swinir/encoder/epoch-last.pth
+
+# Model configuration (must match training)
+model:
+  name: hiif-pps
+  args:
+    encoder_spec:
+      name: swinir
+      args:
+        no_upsampling: true
+    hidden_dim: 256
+    blocks: 16
+
+# Validation dataset
+val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/validation
+      cache: in_memory
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 64
+      augment: false
+
+# Decoder training configuration (few-shot learning)
+decoder_training:
+  # Number of samples per user for training decoder
+  samples_per_user: 3  # Very small for quick test
+
+  # Number of samples per user for evaluation
+  eval_samples_per_user: 2  # Very small for quick test
+
+  # Batch size for decoder training
+  batch_size: 2
+
+  # Optimizer
+  optimizer:
+    name: adam
+    args:
+      lr: 1.e-4
+      betas: [0.9, 0.999]
+
+  # Loss weight scheduling
+  loss_schedule:
+    schedule_type: exponential
+    w_p_start: 0.5
+    w_p_end: 0.8
+
+  # Evaluation checkpoints (iterations) - very short for testing
+  eval_checkpoints: [10, 20]
+
+  # Maximum iterations for decoder training
+  max_iterations: 20
+
+  # Patch-based evaluation settings
+  patch_size: 128
+  stride: 64
+
+# Augmentation configurations
+augmentation:
+  # Training augmentation
+  train_aug:
+    crop_size: 64
+    augment: true
+    augment_params:
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+  # Evaluation - clean only (fastest)
+  clean:
+    augment: false
+
+# Validation scope - just 1 user for quick test
+num_val_users: 1
+
+# Metrics - minimal set for quick testing
+metrics:
+  - psnr
+  - ssim
+
+# Results
+save_images: true
+save_interval: null
+
+# Data normalization
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}

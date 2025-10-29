@@ -860,7 +860,7 @@ class SwinIR(nn.Module):
         return flops
 
 @register('swinir')
-def make_swinir(no_upsampling=False):
-    return SwinIR()
+def make_swinir(no_upsampling=False, n_colors=3):
+    return SwinIR(in_chans=n_colors)
 
 

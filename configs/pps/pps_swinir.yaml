@@ -1,0 +1,196 @@
+# =============================================================================
+# Unified PPS Configuration with SwinIR Encoder
+# =============================================================================
+# This config file is used by BOTH train_pps.py and validate_pps.py
+#
+# Structure:
+# - Shared Configuration: Used by both training and validation
+# - Training Configuration: Used only by train_pps.py
+# - Validation Configuration: Used only by validate_pps.py
+#
+# Usage:
+#   python train_pps.py --config configs/pps/pps_swinir.yaml
+#   python validate_pps.py --config configs/pps/pps_swinir.yaml
+# =============================================================================
+
+# =============================================================================
+# Shared Configuration (used by both train and validate)
+# =============================================================================
+
+model:
+  name: hiif-pps
+  args:
+    encoder_spec:
+      name: swinir
+      args:
+        no_upsampling: true
+        # SwinIR default params (auto-configured):
+        # - img_size: auto-adjusted to crop_size (128)
+        # - embed_dim: 180
+        # - depths: [6, 6, 6, 6, 6, 6]
+        # - num_heads: [6, 6, 6, 6, 6, 6]
+        # - window_size: 8
+    hidden_dim: 256
+    blocks: 16
+    # user_ids will be auto-detected from dataset
+
+val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/validation
+      cache: in_memory
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 128  # Matches training crop_size for SwinIR
+      augment: false
+  batch_size: 2
+
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}
+
+# =============================================================================
+# Training Configuration (used by train_pps.py only)
+# =============================================================================
+
+train_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/train
+      cache: in_memory
+      # Auto-loads all users from response_dir
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 128  # Larger crop for SwinIR (better context for transformers)
+      augment: true
+      augment_params:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+  batch_size: 2  # 2 samples × 4 inputs = 8 images (memory-efficient for SwinIR)
+  sampler:
+    iterations_per_user: 16  # 16 iterations per user before switching
+
+optimizer:
+  name: adam
+  args:
+    lr: 5.0e-4  # Slightly lower than original SwinIR (4e-4) for stability with PPS
+    betas: [0.9, 0.999]
+
+epoch_max: 200  # Full training: 200 epochs (~40 days on single GPU)
+epoch_val: 20   # Validate every 20 epochs
+epoch_save: 20  # Save checkpoint every 20 epochs
+
+# Optional: Cosine LR with warmup (like original SwinIR)
+# Uncomment to enable:
+# cosine_lr_warmup:
+#   warmup_t: 10
+#   warmup_lr_init: 1.e-6
+#   lr_min: 1.e-6
+
+loss_schedule:
+  schedule_type: linear
+  w_p_start: 0.5
+  w_p_end: 0.9
+  # total_iterations auto-computed as: epoch_max × batches_per_epoch
+
+# =============================================================================
+# Validation Configuration (used by validate_pps.py only)
+# =============================================================================
+
+# Encoder checkpoint from training
+encoder_checkpoint: ./save/train_hiif_pps_swinir/encoder/epoch-last.pth
+
+# Decoder training configuration (few-shot learning)
+decoder_training:
+  # Number of samples per user for training decoder
+  samples_per_user: 64
+
+  # Number of samples per user for evaluation (randomly selected from remaining)
+  eval_samples_per_user: 8
+
+  # Batch size for decoder training
+  batch_size: 2  # 2 samples × 4 inputs = 8 images
+
+  # Optimizer (same as training)
+  optimizer:
+    name: adam
+    args:
+      lr: 2.e-4  # Lower than main training for fine-tuning
+      betas: [0.9, 0.999]
+
+  # Loss weight scheduling (simplified for validation)
+  loss_schedule:
+    schedule_type: exponential
+    w_p_start: 0.5
+    w_p_end: 0.8
+
+  # Evaluation checkpoints (iterations)
+  eval_checkpoints: [50, 100, 500, 1000]
+
+  # Maximum iterations for decoder training
+  max_iterations: 1000
+
+  # Patch-based evaluation settings
+  patch_size: 128
+  stride: 64
+
+# Augmentation configurations
+augmentation:
+  # Training augmentation (used when training decoder with crop)
+  train_aug:
+    crop_size: 128  # Matches training crop_size
+    augment: true
+    augment_params:
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+  # Evaluation augmentation - same as training (full-resolution, no crop)
+  eval_aug_same:
+    augment: true
+    augment_params:
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+  # Evaluation augmentation - different from training (full-resolution, no crop)
+  eval_aug_different:
+    augment: true
+    augment_params:
+      brightness: 0.2  # Stronger
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+
+  # Clean (no augmentation, full-resolution)
+  clean:
+    augment: false
+
+# Validation scope
+num_val_users: null  # null = all users, or specify number (e.g., 2 for testing)
+
+# Metrics to compute (all available metrics shown below)
+# Comment out any metrics you don't want to compute
+metrics:
+  - psnr              # Peak Signal-to-Noise Ratio (always available)
+  - ssim              # Structural Similarity Index
+  - lpips             # Learned Perceptual Image Patch Similarity
+  - delta_e_cie76     # CIE 1976 Delta E (LAB Euclidean distance)
+  - delta_e_oklab     # OKLab Delta E (modern, fast, perceptual)
+  - ciede2000         # CIE Delta E 2000 (current industry standard)
+  - delta_e_cam16     # CAM16-UCS Delta E (most accurate, slower)
+  - niqe              # Natural Image Quality Evaluator (no-reference)
+
+# Results
+save_images: true  # Save generated images
+save_interval: null  # Save at checkpoints only (not every iteration)

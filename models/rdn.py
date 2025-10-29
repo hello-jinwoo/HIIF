@@ -115,7 +115,7 @@ class RDN(nn.Module):
 
 @register('rdn')
 def make_rdn(G0=64, RDNkSize=3, RDNconfig='B',
-             scale=2, no_upsampling=False):
+             scale=2, no_upsampling=False, n_colors=3):
     args = Namespace()
     args.G0 = G0
     args.RDNkSize = RDNkSize
@@ -124,5 +124,5 @@ def make_rdn(G0=64, RDNkSize=3, RDNconfig='B',
     args.scale = [scale]
     args.no_upsampling = no_upsampling
 
-    args.n_colors = 3
+    args.n_colors = n_colors
     return RDN(args)

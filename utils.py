@@ -157,7 +157,13 @@ def make_optimizer(param_list, optimizer_spec, load_sd=False):
         'sgd': SGD,
         'adam': Adam
     }[optimizer_spec['name']]
-    optimizer = Optimizer(param_list, **optimizer_spec['args'])
+
+    # Convert string lr to float (handles YAML parsing issues with scientific notation)
+    args = optimizer_spec['args'].copy()
+    if 'lr' in args and isinstance(args['lr'], str):
+        args['lr'] = float(args['lr'])
+
+    optimizer = Optimizer(param_list, **args)
     if load_sd:
         optimizer.load_state_dict(optimizer_spec['sd'])
     return optimizer
@@ -208,3 +214,183 @@ def calc_psnr(sr, hr, dataset=None, scale=1, rgb_range=1):
         valid = diff
     mse = valid.pow(2).mean()
     return -10 * torch.log10(mse)
+
+
+# Patch-based image processing utilities for full-resolution inference
+from typing import List, Tuple
+
+
+def extract_patches(image: torch.Tensor, patch_size: int = 128, stride: int = 64) -> Tuple[List[torch.Tensor], List[Tuple[int, int]], Tuple[int, int, int]]:
+    """
+    Extract overlapping patches from an image using sliding window.
+
+    Args:
+        image: torch.Tensor (C, H, W) - Input image
+        patch_size: int - Size of each square patch (default: 128)
+        stride: int - Stride between patches (default: 64)
+
+    Returns:
+        patches: List of torch.Tensor (C, patch_size, patch_size)
+        positions: List of (top, left) positions for each patch
+        original_shape: Tuple (C, H, W) - Original image shape before padding
+
+    Example:
+        >>> image = torch.randn(3, 512, 768)
+        >>> patches, positions, orig_shape = extract_patches(image, patch_size=128, stride=64)
+        >>> len(patches)  # Number of patches
+    """
+    # Input validation
+    assert image.ndim == 3, f"Expected 3D tensor (C, H, W), got {image.ndim}D"
+    assert patch_size > 0, f"patch_size must be positive, got {patch_size}"
+    assert stride > 0, f"stride must be positive, got {stride}"
+
+    C, H, W = image.shape
+    assert H > 0 and W > 0, f"Invalid image dimensions: ({H}, {W})"
+
+    original_shape = (C, H, W)  # Save before padding
+    patches = []
+    positions = []
+
+    # Handle small images by padding
+    if H < patch_size or W < patch_size:
+        pad_h = max(0, patch_size - H)
+        pad_w = max(0, patch_size - W)
+        # Pad with replication (safe for any size)
+        image = torch.nn.functional.pad(image, (0, pad_w, 0, pad_h), mode='replicate')
+        H, W = image.shape[1], image.shape[2]
+
+    # Calculate number of patches needed
+    # Ensure we cover the entire image
+    for top in range(0, H, stride):
+        for left in range(0, W, stride):
+            # Adjust patch boundaries if they exceed image dimensions
+            bottom = min(top + patch_size, H)
+            right = min(left + patch_size, W)
+
+            # Adjust top-left if patch is at image boundary
+            actual_top = max(0, bottom - patch_size)
+            actual_left = max(0, right - patch_size)
+
+            # Extract patch
+            patch = image[:, actual_top:actual_top + patch_size, actual_left:actual_left + patch_size]
+
+            # Ensure patch is exactly patch_size x patch_size
+            if patch.shape[1] == patch_size and patch.shape[2] == patch_size:
+                patches.append(patch)
+                positions.append((actual_top, actual_left))
+
+    return patches, positions, original_shape
+
+
+def stitch_patches(patches: List[torch.Tensor], positions: List[Tuple[int, int]],
+                   image_shape: Tuple[int, int, int]) -> torch.Tensor:
+    """
+    Stitch patches back into full image with simple averaging in overlap regions.
+
+    Handles cases where patches were extracted from padded images by stitching
+    to the padded size first, then cropping to the desired output shape.
+
+    Args:
+        patches: List of torch.Tensor (C, patch_size, patch_size)
+        positions: List of (top, left) positions corresponding to each patch
+        image_shape: Tuple (C, H, W) - Desired output image shape (may be smaller than padded)
+
+    Returns:
+        image: torch.Tensor (C, H, W) - Reconstructed full image
+
+    Example:
+        >>> patches = [torch.randn(3, 128, 128) for _ in range(10)]
+        >>> positions = [(0, 0), (0, 64), ...]
+        >>> image = stitch_patches(patches, positions, (3, 512, 768))
+    """
+    # Input validation
+    assert len(patches) > 0, "Empty patch list"
+    assert len(patches) == len(positions), f"Mismatch: {len(patches)} patches, {len(positions)} positions"
+
+    C_out, H_out, W_out = image_shape
+    device = patches[0].device
+    dtype = patches[0].dtype
+
+    # Verify channel consistency
+    C_patch = patches[0].shape[0]
+    assert C_patch == C_out, f"Channel mismatch: patches have {C_patch} channels, expected {C_out}"
+
+    # Infer padded dimensions from patch positions and sizes
+    # The padded size is the maximum extent covered by any patch
+    patch_size_h = patches[0].shape[1]
+    patch_size_w = patches[0].shape[2]
+
+    max_h = max(top + patch_size_h for top, left in positions)
+    max_w = max(left + patch_size_w for top, left in positions)
+
+    # Padded dimensions (at least as large as desired output)
+    H_padded = max(max_h, H_out)
+    W_padded = max(max_w, W_out)
+
+    # Initialize accumulator and count tensors (padded size)
+    accumulated = torch.zeros((C_out, H_padded, W_padded), device=device, dtype=dtype)
+    count = torch.zeros((C_out, H_padded, W_padded), device=device, dtype=dtype)
+
+    # Accumulate patches
+    for patch, (top, left) in zip(patches, positions):
+        patch_h, patch_w = patch.shape[1], patch.shape[2]
+        accumulated[:, top:top+patch_h, left:left+patch_w] += patch
+        count[:, top:top+patch_h, left:left+patch_w] += 1
+
+    # Average overlapping regions
+    # Verify coverage (all pixels in desired output should be covered)
+    if __debug__:
+        uncovered = (count[:, :H_out, :W_out] == 0).sum().item()
+        if uncovered > 0:
+            import warnings
+            warnings.warn(f"Stitching: {uncovered} pixels in output region not covered by any patch")
+
+    count = count.clamp(min=1)
+    image_padded = accumulated / count
+
+    # Crop to desired output size
+    image = image_padded[:, :H_out, :W_out]
+
+    return image
+
+
+def process_image_patchwise(image: torch.Tensor, model_fn, patch_size: int = 128,
+                            stride: int = 64, **model_kwargs) -> torch.Tensor:
+    """
+    Process a full-resolution image using patch-based inference.
+
+    Args:
+        image: torch.Tensor (C, H, W) - Input image
+        model_fn: Callable that takes a patch and returns processed patch
+                 Signature: model_fn(patch, **kwargs) -> processed_patch
+        patch_size: int - Size of each square patch
+        stride: int - Stride between patches
+        **model_kwargs: Additional keyword arguments to pass to model_fn
+
+    Returns:
+        output: torch.Tensor (C', H, W) - Processed full image
+                C' may differ from C depending on model output
+
+    Example:
+        >>> def my_model(patch, coord, cell):
+        ...     return patch * 2  # Simple example
+        >>> image = torch.randn(3, 512, 768)
+        >>> output = process_image_patchwise(image, my_model, patch_size=128, stride=64)
+    """
+    # Extract patches
+    patches, positions, original_shape = extract_patches(image, patch_size, stride)
+
+    # Process each patch
+    processed_patches = []
+    for patch in patches:
+        processed_patch = model_fn(patch, **model_kwargs)
+        processed_patches.append(processed_patch)
+
+    # Infer output shape from first processed patch
+    C_out = processed_patches[0].shape[0]
+    _, H, W = original_shape  # Use original dimensions
+
+    # Stitch patches back together
+    output = stitch_patches(processed_patches, positions, (C_out, H, W))
+
+    return output

@@ -3,3 +3,4 @@ from . import edsr, rdn, swinir
 from . import mlp
 
 from . import hiif
+from . import hiif_pps

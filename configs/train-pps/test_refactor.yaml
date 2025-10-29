@@ -1,0 +1,53 @@
+# Minimal config for testing refactored code
+# 2 epochs, 2 users (via dataset filtering)
+
+model:
+  name: hiif-pps
+  args:
+    encoder_spec:
+      name: edsr-baseline
+      args:
+        no_upsampling: true
+        n_resblocks: 4  # Smaller for faster testing
+        n_feats: 32
+    hidden_dim: 128  # Smaller
+    blocks: 4  # Smaller
+    # user_ids will be auto-detected from dataset
+
+train_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/train
+      cache: none  # Faster startup
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 64
+      augment: true
+      augment_params:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+  batch_size: 2
+  sampler:
+    iterations_per_user: 2  # Very small for quick test
+
+optimizer:
+  name: adam
+  args:
+    lr: 1.e-4
+
+epoch_max: 2  # Just 2 epochs
+epoch_save: 1  # Save every epoch
+
+loss_schedule:
+  schedule_type: exponential
+  w_p_start: 0.5
+  w_p_end: 0.8
+
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}

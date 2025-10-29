@@ -1,5 +1,9 @@
 .claude/
 docs/
+tests*/
+
+tmp*/
+tmp*
 
 load/
 save/

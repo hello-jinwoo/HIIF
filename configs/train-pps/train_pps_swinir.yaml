@@ -1,0 +1,83 @@
+# PPS Training Configuration with SwinIR Encoder
+# Full-scale: ~100 users, 200 epochs
+# SwinIR provides stronger feature extraction with Transformer architecture
+
+model:
+  name: hiif-pps
+  args:
+    encoder_spec:
+      name: swinir
+      args:
+        no_upsampling: true
+        # SwinIR default params:
+        # - img_size: auto-adjusted to crop_size
+        # - embed_dim: 180
+        # - depths: [6, 6, 6, 6, 6, 6]
+        # - num_heads: [6, 6, 6, 6, 6, 6]
+        # - window_size: 8
+    hidden_dim: 256
+    blocks: 16
+    # user_ids will be auto-detected from dataset
+
+train_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/train
+      cache: in_memory
+      # Auto-loads all users from response_dir
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 128  # Larger crop for SwinIR (better context for transformers)
+      augment: true
+      augment_params:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+  batch_size: 2  # 2 samples × 4 inputs = 8 images (memory-efficient for SwinIR)
+  sampler:
+    iterations_per_user: 16  # 16 iterations per user before switching
+
+val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/validation
+      cache: in_memory
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 128
+      augment: false
+  batch_size: 2
+
+optimizer:
+  name: adam
+  args:
+    lr: 1.0e-4  # Slightly lower than original SwinIR (4e-4) for stability with PPS
+    betas: [0.9, 0.999]
+
+epoch_max: 500  # Full training: 200 epochs (~40 days on single GPU)
+epoch_val: 20   # Validate every 20 epochs
+epoch_save: 50  # Save checkpoint every 20 epochs
+
+# Optional: Cosine LR with warmup (like original SwinIR)
+# Uncomment to enable:
+# cosine_lr_warmup:
+#   warmup_t: 10
+#   warmup_lr_init: 1.e-6
+#   lr_min: 1.e-6
+
+loss_schedule:
+  schedule_type: linear
+  w_p_start: 0.5
+  w_p_end: 1.5
+  # total_iterations auto-computed as: epoch_max × batches_per_epoch
+
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}

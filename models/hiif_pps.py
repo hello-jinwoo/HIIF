@@ -1,31 +1,41 @@
+"""
+HIIF with User-Specific Decoders for PPS Learning
+
+Architecture:
+- Shared encoder (EDSR/SwinIR/RDN) for all users
+- User-specific HIIF decoders (100 decoders, one per user)
+- Decoder load/offload: Only current decoder in GPU, others on CPU
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import models
 from models import register
+from models.hiif import MLP_with_shortcut, qkv_attn, compute_hi_coord
 from models.color_utils import rgb_to_hsv, hsv_to_rgb, rgb_to_oklab, oklab_to_rgb
 from utils import make_coord
 
-import torch.fft
 
+@register('hiif-pps')
+class HIIF_PPS(nn.Module):
+    """HIIF with user-specific decoders for personalized photographic style
 
-def compute_hi_coord(coord, n):
-    coord_clip = torch.clip(coord - 1e-9, 0., 1.)
-    coord_bin = ((coord_clip * 2 ** (n + 1)).floor() % 2)
-    return coord_bin
+    Uses disk-based decoder load/offload:
+    - Only ONE decoder is kept in memory at a time
+    - Decoders are loaded from disk when needed (or created if new)
+    - Decoders are saved to disk when switching users
+    """
 
-@register('hiif')
-class hiif(nn.Module):
-
-    def __init__(self, encoder_spec, blocks=16, hidden_dim=256,
+    def __init__(self, encoder_spec, hidden_dim=256, blocks=16, user_ids=None,
                  input_type='rgb', output_type='rgb_residual'):
-        """Initialize HIIF model.
-
+        """
         Args:
             encoder_spec: Encoder configuration dict
+            hidden_dim: Hidden dimension for decoders
             blocks: Number of attention blocks
-            hidden_dim: Hidden dimension for MLPs
+            user_ids: List of available user IDs (for reference, not created in memory)
             input_type: Input color space ('rgb', 'hsv', 'oklab', 'all')
             output_type: Output type ('rgb_residual', 'hsv_residual',
                         'oklab_residual', 'affine_coef')
@@ -43,6 +53,8 @@ class hiif(nn.Module):
 
         self.input_type = input_type
         self.output_type = output_type
+        self.hidden_dim = hidden_dim
+        self.blocks = blocks
         self.n_hi_layers = 6
 
         # Update encoder spec with correct n_colors
@@ -51,22 +63,23 @@ class hiif(nn.Module):
             encoder_spec_copy['args'] = {}
         encoder_spec_copy['args']['n_colors'] = self._get_input_channels()
 
+        # Shared encoder
         self.encoder = models.make(encoder_spec_copy)
         self.freq = nn.Conv2d(self.encoder.out_dim, hidden_dim, 3, padding=1)
 
-        # Determine output channels for final layer
-        output_channels = self._get_output_channels()
+        # Decoder configuration (for creating decoders on-demand)
+        self.decoder_config = {
+            'hidden_dim': hidden_dim,
+            'blocks': blocks,
+            'output_channels': self._get_output_channels(),
+        }
 
-        self.fc_layers = nn.ModuleList(
-            [
-                MLP_with_shortcut(hidden_dim * 4 + 2 + 2 if d == 0 else hidden_dim + 2,
-                                  output_channels if d == self.n_hi_layers - 1 else hidden_dim, 256) \
-                for d in range(self.n_hi_layers)
-            ]
-        )
+        # Available user IDs (for validation, not created in memory)
+        self.available_user_ids = user_ids if user_ids is not None else []
 
-        self.conv0 = qkv_attn(hidden_dim, blocks)
-        self.conv1 = qkv_attn(hidden_dim, blocks)
+        # Current decoder (only ONE in memory at a time)
+        self.current_decoder = None
+        self.current_user_id = None
 
     def _get_input_channels(self):
         """Get number of input channels based on input_type."""
@@ -104,11 +117,112 @@ class hiif(nn.Module):
         else:
             raise ValueError(f"Unknown input_type: {self.input_type}")
 
-    def gen_feat(self, inp):
-        """Generate features from input.
+    def _create_decoder(self, hidden_dim, blocks, output_channels):
+        """
+        Create a single HIIF decoder (same structure as original hiif.py)
 
         Args:
-            inp: Input RGB tensor (B, 3, H, W)
+            hidden_dim: Hidden dimension
+            blocks: Number of attention blocks
+            output_channels: Number of output channels (3 or 12)
+
+        Returns:
+            nn.ModuleDict with fc_layers, conv0, conv1
+        """
+        fc_layers = nn.ModuleList([
+            MLP_with_shortcut(
+                hidden_dim * 4 + 2 + 2 if d == 0 else hidden_dim + 2,
+                output_channels if d == self.n_hi_layers - 1 else hidden_dim,
+                256
+            ) for d in range(self.n_hi_layers)
+        ])
+
+        conv0 = qkv_attn(hidden_dim, blocks)
+        conv1 = qkv_attn(hidden_dim, blocks)
+
+        return nn.ModuleDict({
+            'fc_layers': fc_layers,
+            'conv0': conv0,
+            'conv1': conv1,
+        })
+
+    def load_user_decoder(self, user_id, checkpoint_manager):
+        """
+        Load user decoder from disk (or create new if not exists)
+
+        This method:
+        1. Creates a new decoder module
+        2. Tries to load weights from checkpoint
+        3. Moves decoder to GPU
+        4. Updates current_user_id
+
+        Args:
+            user_id: User ID to load
+            checkpoint_manager: CheckpointManager instance for loading weights
+
+        Note: Previous decoder should be offloaded before calling this
+        """
+        if self.current_user_id == user_id and self.current_decoder is not None:
+            return  # Already loaded
+
+        # Get encoder device
+        device = next(self.encoder.parameters()).device
+
+        # Create new decoder
+        decoder = self._create_decoder(
+            self.decoder_config['hidden_dim'],
+            self.decoder_config['blocks'],
+            self.decoder_config['output_channels']
+        )
+
+        # Try to load weights from checkpoint
+        if checkpoint_manager is not None:
+            if checkpoint_manager.load_user_decoder_weights(decoder, user_id):
+                print(f"Loaded decoder for {user_id} from checkpoint")
+            else:
+                print(f"Initialized new decoder for {user_id}")
+        else:
+            print(f"Initialized new decoder for {user_id} (no checkpoint manager)")
+
+        # Move to GPU
+        decoder.to(device)
+
+        # Update current decoder
+        self.current_decoder = decoder
+        self.current_user_id = user_id
+
+    def offload_user_decoder(self, checkpoint_manager):
+        """
+        Save current decoder to disk and free memory
+
+        This method:
+        1. Saves current decoder weights to disk
+        2. Removes decoder from memory
+        3. Clears current_user_id
+
+        Args:
+            checkpoint_manager: CheckpointManager instance for saving weights
+        """
+        if self.current_decoder is None:
+            return  # Nothing to offload
+
+        # Save to disk
+        if checkpoint_manager is not None:
+            checkpoint_manager.save_user_decoder(self, self.current_user_id)
+            print(f"Saved decoder for {self.current_user_id}")
+        else:
+            print(f"Discarded decoder for {self.current_user_id} (no checkpoint manager)")
+
+        # Free memory
+        self.current_decoder = None
+        self.current_user_id = None
+
+    def gen_feat(self, inp):
+        """
+        Generate features from input (shared encoder)
+
+        Args:
+            inp: Input RGB (B, 3, H, W)
 
         Returns:
             Feature map (B, hidden_dim, H', W')
@@ -194,9 +308,34 @@ class hiif(nn.Module):
 
         return transformed.clamp(0, 1)
 
-    def query_rgb(self, coord, cell):
-        feat = (self.feat)
-        grid = 0
+    def query_rgb(self, coord, cell, user_id):
+        """
+        Query RGB values using user-specific decoder
+
+        Args:
+            coord: Coordinate tensor (B, H, W, 2)
+            cell: Cell size tensor (B, 2)
+            user_id: User ID (string)
+
+        Returns:
+            RGB predictions (B, 3, H, W)
+
+        Note: Decoder must be loaded before calling this method
+              (use load_user_decoder in training loop)
+        """
+        # Verify correct decoder is loaded
+        if self.current_user_id != user_id or self.current_decoder is None:
+            raise RuntimeError(
+                f"Decoder for {user_id} is not loaded. "
+                f"Current decoder: {self.current_user_id}. "
+                f"Call load_user_decoder() first."
+            )
+
+        # Get current decoder
+        decoder = self.current_decoder
+
+        # Apply HIIF decoder logic (same as original hiif.py)
+        feat = self.feat
 
         pos_lr = make_coord(feat.shape[-2:], flatten=False).to(feat.device) \
             .permute(2, 0, 1) \
@@ -210,6 +349,7 @@ class hiif(nn.Module):
 
         preds = []
         areas = []
+
         for vx in vx_lst:
             for vy in vy_lst:
                 coord_ = coord.clone()
@@ -217,54 +357,63 @@ class hiif(nn.Module):
                 coord_[:, :, :, 1] += vy * ry + eps_shift
                 coord_.clamp_(-1 + 1e-6, 1 - 1e-6)
 
-                feat_ = F.grid_sample(feat, coord_.flip(-1), mode='nearest', align_corners=False)
+                feat_ = F.grid_sample(feat, coord_.flip(-1), mode='nearest',
+                                      align_corners=False)
 
-                old_coord = F.grid_sample(pos_lr, coord_.flip(-1), mode='nearest', align_corners=False)
+                old_coord = F.grid_sample(pos_lr, coord_.flip(-1), mode='nearest',
+                                          align_corners=False)
                 rel_coord = coord.permute(0, 3, 1, 2) - old_coord
                 rel_coord[:, 0, :, :] *= feat.shape[-2] / 2
                 rel_coord[:, 1, :, :] *= feat.shape[-1] / 2
-                rel_coord_n = rel_coord.permute(0, 2, 3, 1).reshape(rel_coord.shape[0], -1, rel_coord.shape[1])
+                rel_coord_n = rel_coord.permute(0, 2, 3, 1).reshape(
+                    rel_coord.shape[0], -1, rel_coord.shape[1]
+                )
 
                 area = torch.abs(rel_coord[:, 0, :, :] * rel_coord[:, 1, :, :])
                 areas.append(area + 1e-9)
 
                 preds.append(feat_)
+
                 if vx == -1 and vy == -1:
                     # Local coord
                     rel_coord_mask = (rel_coord_n > 0).float()
                     rxry = torch.tensor([rx, ry], device=coord.device)[None, None, :]
-                    local_coord = rel_coord_mask * rel_coord_n + (1. - rel_coord_mask) * (rxry - rel_coord_n)
+                    local_coord = rel_coord_mask * rel_coord_n + \
+                                  (1. - rel_coord_mask) * (rxry - rel_coord_n)
 
         rel_cell = cell.clone()
         rel_cell[:, 0] *= feat.shape[-2]
         rel_cell[:, 1] *= feat.shape[-1]
 
         tot_area = torch.stack(areas).sum(dim=0)
-        t = areas[0];
-        areas[0] = areas[3];
-        areas[3] = t
-        t = areas[1];
-        areas[1] = areas[2];
-        areas[2] = t
+        # Swap areas for correct weighting
+        t = areas[0]; areas[0] = areas[3]; areas[3] = t
+        t = areas[1]; areas[1] = areas[2]; areas[2] = t
 
         for index, area in enumerate(areas):
             preds[index] = preds[index] * (area / tot_area).unsqueeze(1)
 
-        grid = torch.cat([*preds, rel_cell.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, coord.shape[1], coord.shape[2])], dim=1)
+        grid = torch.cat([
+            *preds,
+            rel_cell.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, coord.shape[1], coord.shape[2])
+        ], dim=1)
 
         B, C_g, H, W = grid.shape
         grid = grid.permute(0, 2, 3, 1).reshape(B, H * W, C_g)
 
+        # Apply decoder layers
         for n in range(self.n_hi_layers):
             hi_coord = compute_hi_coord(local_coord, n)
             if n == 0:
-                x = torch.cat([grid] + [hi_coord], dim=-1)
+                x = torch.cat([grid, hi_coord], dim=-1)
             else:
-                x = torch.cat([x] + [hi_coord], dim=-1)
-            x = self.fc_layers[n](x)
+                x = torch.cat([x, hi_coord], dim=-1)
+
+            x = decoder['fc_layers'][n](x)
+
             if n == 0:
-                x = self.conv0(x)
-                x = self.conv1(x)
+                x = decoder['conv0'](x)
+                x = decoder['conv1'](x)
 
         # Get output channels from model
         output_channels = self._get_output_channels()
@@ -272,88 +421,27 @@ class hiif(nn.Module):
 
         # Post-process to final RGB
         ret = self._postprocess_output(result, coord)
+
         return ret
 
-    def forward(self, inp, coord, cell):
+    def forward(self, inp, coord, cell, user_indices):
+        """
+        Forward pass
+
+        Args:
+            inp: Input RGB (B, 3, H, W)
+            coord: Coordinates (B, H, W, 2)
+            cell: Cell size (B, 2)
+            user_indices: User IDs (list of B strings, all same due to same-user batching)
+
+        Returns:
+            Output RGB (B, 3, H, W)
+        """
+        # Generate features with shared encoder
         self.gen_feat(inp)
-        return self.query_rgb(coord, cell)
 
+        # All samples in batch are from same user (due to PPSUserBatchSampler)
+        user_id = user_indices[0]
 
-class MLP(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_dim, out_dim)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
-
-class MLP_with_shortcut(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        self.norm = nn.LayerNorm(in_dim)
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_dim, out_dim)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x):
-        short_cut = x
-        x = self.norm(x)
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        if x.shape[-1] == short_cut.shape[-1]:
-            x = x + short_cut
-        return x
-
-class qkv_attn(nn.Module):
-    def __init__(self, midc, heads):
-        super().__init__()
-
-        self.headc = midc // heads
-        self.heads = heads
-        self.midc = midc
-
-        self.qkv_proj = nn.Linear(midc, midc * 3, bias=True)
-
-        self.kln = nn.LayerNorm(self.headc)
-        self.vln = nn.LayerNorm(self.headc)
-        self.sm = nn.Softmax(dim=-1)
-
-        self.proj1 = nn.Linear(midc, midc)
-        self.proj2 = nn.Linear(midc, midc)
-
-        self.proj_drop = nn.Dropout(0.)
-
-        self.act = nn.GELU()
-
-    def forward(self, x):
-        B, HW, C = x.shape
-        bias = x
-
-        qkv = self.qkv_proj(x).reshape(B, HW, self.heads, 3 * self.headc)
-        qkv = qkv.permute(0, 2, 1, 3)
-        q, k, v = qkv.chunk(3, dim=-1) # B, heads, HW, headc
-
-        k = self.kln(k)
-        v = self.vln(v)
-
-        v = torch.matmul(k.transpose(-2, -1), v) / (HW)
-        # v = self.sm(v)
-        v = torch.matmul(q, v)
-        v = v.permute(0, 2, 1, 3).reshape(B, HW, C)
-
-        ret = v + bias
-        bias = self.proj2(self.act(self.proj1(ret))) + bias
-
-        return bias
+        # Query RGB using user-specific decoder
+        return self.query_rgb(coord, cell, user_id)
