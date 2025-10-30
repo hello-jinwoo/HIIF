@@ -35,14 +35,14 @@ val_dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/validation
+      response_dir: ./load/PPS/responses/validation_small
       cache: in_memory
   wrapper:
     name: pps-color-augmented
     args:
       crop_size: 64
       augment: false
-  batch_size: 2
+  batch_size: 16
 
 data_norm:
   inp: {sub: [0.5], div: [0.5]}
@@ -57,37 +57,37 @@ train_dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/train
+      response_dir: ./load/PPS/responses/train_small
       cache: in_memory
       # Auto-loads all users from response_dir
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 64  # Standard crop for EDSR
+      crop_size: 128  # Standard crop for EDSR
       augment: true
       augment_params:
         brightness: 0.1
         contrast: 0.1
         saturation: 0.1
         hue: 0.05
-  batch_size: 2  # 2 samples × 4 inputs = 8 images
+  batch_size: 16  # 2 samples × 4 inputs = 8 images
   sampler:
     iterations_per_user: 16  # 16 iterations per user before switching
 
 optimizer:
   name: adam
   args:
-    lr: 1.e-4  # Standard learning rate for EDSR
+    lr: 5.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 200  # Full training: 200 epochs
+epoch_max: 100  # Full training: 200 epochs
 epoch_val: 20   # Validate every 20 epochs
 epoch_save: 20  # Save checkpoint every 20 epochs
 
 loss_schedule:
-  schedule_type: exponential
+  schedule_type: linear
   w_p_start: 0.5
-  w_p_end: 0.8
+  w_p_end: 1.2
   # total_iterations auto-computed as: epoch_max × batches_per_epoch
 
 # =============================================================================
@@ -95,7 +95,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_edsr/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e100_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -106,30 +106,30 @@ decoder_training:
   eval_samples_per_user: 8
 
   # Batch size for decoder training
-  batch_size: 2  # 2 samples × 4 inputs = 8 images
+  batch_size: 16  # 2 samples × 4 inputs = 8 images
 
   # Optimizer
   optimizer:
     name: adam
     args:
-      lr: 1.e-4  # Same as main training
+      lr: 5.e-4  # Same as main training
       betas: [0.9, 0.999]
 
   # Loss weight scheduling
   loss_schedule:
-    schedule_type: exponential
+    schedule_type: linear
     w_p_start: 0.5
-    w_p_end: 0.8
+    w_p_end: 1.2
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [50, 100, 500, 1000]
+  eval_checkpoints: [100, 250, 500]
 
   # Maximum iterations for decoder training
-  max_iterations: 1000
+  max_iterations: 500
 
   # Patch-based evaluation settings
-  patch_size: 64
-  stride: 32
+  patch_size: 128
+  stride: 64
 
 # Augmentation configurations
 augmentation:

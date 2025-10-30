@@ -62,6 +62,43 @@ class PPSFullImageWrapper(Dataset):
             hue=hue
         )
 
+    def _align_image_sizes(self, prefer, non_prefer):
+        """
+        Align two images to minimum common size using center crop.
+
+        Handles cases where prefer and non_prefer images have different dimensions
+        by cropping both to their minimum common size.
+
+        Args:
+            prefer: torch.Tensor (3, H1, W1), prefer image
+            non_prefer: torch.Tensor (3, H2, W2), non-prefer image
+
+        Returns:
+            tuple: (aligned_prefer, aligned_non_prefer), both (3, min_H, min_W)
+        """
+        H1, W1 = prefer.shape[-2:]
+        H2, W2 = non_prefer.shape[-2:]
+
+        # Calculate minimum dimensions
+        min_H = min(H1, H2)
+        min_W = min(W1, W2)
+
+        # If sizes already match, return as-is
+        if H1 == H2 and W1 == W2:
+            return prefer, non_prefer
+
+        def center_crop(img, target_h, target_w):
+            """Center crop image to target size."""
+            _, h, w = img.shape
+            top = (h - target_h) // 2
+            left = (w - target_w) // 2
+            return img[:, top:top+target_h, left:left+target_w]
+
+        prefer_aligned = center_crop(prefer, min_H, min_W)
+        non_prefer_aligned = center_crop(non_prefer, min_H, min_W)
+
+        return prefer_aligned, non_prefer_aligned
+
     def _apply_color_augmentation(self, img):
         """
         Apply random color augmentation.
@@ -112,7 +149,11 @@ class PPSFullImageWrapper(Dataset):
         prefer_img = sample['prefer']  # (3, H, W)
         non_prefer_img = sample['non_prefer']  # (3, H, W)
 
-        # Get image dimensions
+        # Align image sizes if they differ (handles rare cases of size mismatch)
+        if prefer_img.shape != non_prefer_img.shape:
+            prefer_img, non_prefer_img = self._align_image_sizes(prefer_img, non_prefer_img)
+
+        # Get image dimensions (after alignment)
         H, W = prefer_img.shape[-2:]
 
         # Create 4 input versions (no resize, no crop)

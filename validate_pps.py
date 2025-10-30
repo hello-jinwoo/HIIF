@@ -42,6 +42,214 @@ from pps_utils.validation_core import (
 )
 
 
+def compute_summary(all_results):
+    """Compute averaged metrics across all users for each checkpoint.
+
+    Args:
+        all_results: dict with 'users' key containing per-user results
+
+    Returns:
+        dict: summary with averaged metrics per checkpoint/aug_type
+            Structure: {
+                'iter_0100': {
+                    'clean': {
+                        'prefer_gt': {
+                            'from_prefer_input': {'psnr': ..., 'ssim': ...},
+                            'from_non_prefer_input': {...},
+                            'average': {...}
+                        },
+                        'non_prefer_gt': {...},
+                        'gt_vs_gt': {...}
+                    }
+                }
+            }
+    """
+    summary = {}
+    users_data = all_results.get('users', {})
+
+    if not users_data:
+        return summary
+
+    # Collect all checkpoint iterations
+    all_checkpoints = set()
+    for user_results in users_data.values():
+        all_checkpoints.update(user_results.get('checkpoints', {}).keys())
+
+    # For each checkpoint
+    for ckpt_key in sorted(all_checkpoints):
+        summary[ckpt_key] = {}
+
+        # Collect all aug_types
+        all_aug_types = set()
+        for user_results in users_data.values():
+            if ckpt_key in user_results.get('checkpoints', {}):
+                all_aug_types.update(user_results['checkpoints'][ckpt_key].get('aug_types', {}).keys())
+
+        # For each aug_type
+        for aug_type in sorted(all_aug_types):
+            # Accumulate metrics across users
+            metrics_accumulator = {
+                'prefer_gt': {
+                    'from_prefer_input': {},
+                    'from_non_prefer_input': {}
+                },
+                'non_prefer_gt': {
+                    'from_prefer_input': {},
+                    'from_non_prefer_input': {}
+                },
+                'gt_vs_gt': {}
+            }
+
+            user_count = 0
+
+            for user_results in users_data.values():
+                if ckpt_key not in user_results.get('checkpoints', {}):
+                    continue
+                if aug_type not in user_results['checkpoints'][ckpt_key].get('aug_types', {}):
+                    continue
+
+                aug_data = user_results['checkpoints'][ckpt_key]['aug_types'][aug_type]
+                user_count += 1
+
+                # Accumulate prefer_gt metrics
+                for input_type in ['from_prefer_input', 'from_non_prefer_input']:
+                    if input_type in aug_data.get('prefer_gt', {}):
+                        for metric_name, value in aug_data['prefer_gt'][input_type].items():
+                            if metric_name not in metrics_accumulator['prefer_gt'][input_type]:
+                                metrics_accumulator['prefer_gt'][input_type][metric_name] = []
+                            metrics_accumulator['prefer_gt'][input_type][metric_name].append(value)
+
+                # Accumulate non_prefer_gt metrics
+                for input_type in ['from_prefer_input', 'from_non_prefer_input']:
+                    if input_type in aug_data.get('non_prefer_gt', {}):
+                        for metric_name, value in aug_data['non_prefer_gt'][input_type].items():
+                            if metric_name not in metrics_accumulator['non_prefer_gt'][input_type]:
+                                metrics_accumulator['non_prefer_gt'][input_type][metric_name] = []
+                            metrics_accumulator['non_prefer_gt'][input_type][metric_name].append(value)
+
+                # Accumulate gt_vs_gt metrics
+                if 'gt_vs_gt' in aug_data:
+                    for metric_name, value in aug_data['gt_vs_gt'].items():
+                        if metric_name not in metrics_accumulator['gt_vs_gt']:
+                            metrics_accumulator['gt_vs_gt'][metric_name] = []
+                        metrics_accumulator['gt_vs_gt'][metric_name].append(value)
+
+            # Compute averages
+            summary[ckpt_key][aug_type] = {
+                'prefer_gt': {
+                    'from_prefer_input': {},
+                    'from_non_prefer_input': {},
+                    'average': {}
+                },
+                'non_prefer_gt': {
+                    'from_prefer_input': {},
+                    'from_non_prefer_input': {},
+                    'average': {}
+                },
+                'gt_vs_gt': {},
+                'num_users': user_count
+            }
+
+            # Average prefer_gt
+            for input_type in ['from_prefer_input', 'from_non_prefer_input']:
+                for metric_name, values in metrics_accumulator['prefer_gt'][input_type].items():
+                    if values:
+                        summary[ckpt_key][aug_type]['prefer_gt'][input_type][metric_name] = float(np.mean(values))
+
+            # Compute prefer_gt average of both inputs
+            all_metrics_prefer = set(summary[ckpt_key][aug_type]['prefer_gt']['from_prefer_input'].keys()) | \
+                                set(summary[ckpt_key][aug_type]['prefer_gt']['from_non_prefer_input'].keys())
+            for metric_name in all_metrics_prefer:
+                val1 = summary[ckpt_key][aug_type]['prefer_gt']['from_prefer_input'].get(metric_name, 0.0)
+                val2 = summary[ckpt_key][aug_type]['prefer_gt']['from_non_prefer_input'].get(metric_name, 0.0)
+                summary[ckpt_key][aug_type]['prefer_gt']['average'][metric_name] = (val1 + val2) / 2.0
+
+            # Average non_prefer_gt
+            for input_type in ['from_prefer_input', 'from_non_prefer_input']:
+                for metric_name, values in metrics_accumulator['non_prefer_gt'][input_type].items():
+                    if values:
+                        summary[ckpt_key][aug_type]['non_prefer_gt'][input_type][metric_name] = float(np.mean(values))
+
+            # Compute non_prefer_gt average of both inputs
+            all_metrics_nonprefer = set(summary[ckpt_key][aug_type]['non_prefer_gt']['from_prefer_input'].keys()) | \
+                                   set(summary[ckpt_key][aug_type]['non_prefer_gt']['from_non_prefer_input'].keys())
+            for metric_name in all_metrics_nonprefer:
+                val1 = summary[ckpt_key][aug_type]['non_prefer_gt']['from_prefer_input'].get(metric_name, 0.0)
+                val2 = summary[ckpt_key][aug_type]['non_prefer_gt']['from_non_prefer_input'].get(metric_name, 0.0)
+                summary[ckpt_key][aug_type]['non_prefer_gt']['average'][metric_name] = (val1 + val2) / 2.0
+
+            # Average gt_vs_gt
+            for metric_name, values in metrics_accumulator['gt_vs_gt'].items():
+                if values:
+                    summary[ckpt_key][aug_type]['gt_vs_gt'][metric_name] = float(np.mean(values))
+
+    return summary
+
+
+def print_summary(summary, log_fn):
+    """Print formatted summary of averaged metrics.
+
+    Args:
+        summary: dict from compute_summary()
+        log_fn: logging function
+    """
+    log_fn(f"\n{'='*80}")
+    log_fn(f"SUMMARY - Averaged Across All Users")
+    log_fn(f"{'='*80}")
+
+    for ckpt_key in sorted(summary.keys()):
+        for aug_type in sorted(summary[ckpt_key].keys()):
+            aug_data = summary[ckpt_key][aug_type]
+            num_users = aug_data.get('num_users', 0)
+
+            log_fn(f"\nCheckpoint: {ckpt_key} - Aug: {aug_type} ({num_users} users)")
+
+            # GT vs GT
+            if 'gt_vs_gt' in aug_data and aug_data['gt_vs_gt']:
+                parts = []
+                for metric_name in sorted(aug_data['gt_vs_gt'].keys()):
+                    value = aug_data['gt_vs_gt'][metric_name]
+                    parts.append(f"{metric_name.upper()}: {value:.4f}")
+                log_fn(f"  GT Comparison (Prefer vs Non-Prefer):")
+                log_fn(f"    {', '.join(parts)}")
+
+            # Prefer GT
+            log_fn(f"  Prefer GT:")
+            for input_type in ['from_prefer_input', 'from_non_prefer_input', 'average']:
+                if input_type in aug_data['prefer_gt'] and aug_data['prefer_gt'][input_type]:
+                    parts = []
+                    for metric_name in sorted(aug_data['prefer_gt'][input_type].keys()):
+                        value = aug_data['prefer_gt'][input_type][metric_name]
+                        parts.append(f"{metric_name.upper()}: {value:.4f}")
+
+                    if input_type == 'from_prefer_input':
+                        label = "prefer input"
+                    elif input_type == 'from_non_prefer_input':
+                        label = "non-prefer input"
+                    else:
+                        label = "[AVERAGE]"
+
+                    log_fn(f"    {label:18s} - {', '.join(parts)}")
+
+            # Non-Prefer GT
+            log_fn(f"  Non-Prefer GT:")
+            for input_type in ['from_prefer_input', 'from_non_prefer_input', 'average']:
+                if input_type in aug_data['non_prefer_gt'] and aug_data['non_prefer_gt'][input_type]:
+                    parts = []
+                    for metric_name in sorted(aug_data['non_prefer_gt'][input_type].keys()):
+                        value = aug_data['non_prefer_gt'][input_type][metric_name]
+                        parts.append(f"{metric_name.upper()}: {value:.4f}")
+
+                    if input_type == 'from_prefer_input':
+                        label = "prefer input"
+                    elif input_type == 'from_non_prefer_input':
+                        label = "non-prefer input"
+                    else:
+                        label = "[AVERAGE]"
+
+                    log_fn(f"    {label:18s} - {', '.join(parts)}")
+
+
 def validate_config(config):
     """Validate configuration parameters.
 
@@ -193,6 +401,16 @@ def main(config_, save_path_):
         )
 
         all_results['users'][user_id] = user_results
+
+    # Compute summary (averaged metrics across all users)
+    log(f"\n{'='*80}")
+    log(f"Computing summary statistics...")
+    log(f"{'='*80}")
+    summary = compute_summary(all_results)
+    all_results['summary'] = summary
+
+    # Print summary to console and log
+    print_summary(summary, log)
 
     # Save results
     results_path = os.path.join(save_path, 'results.json')

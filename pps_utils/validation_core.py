@@ -264,7 +264,7 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
         save_images_dir: str or None, directory to save images
         patch_size: int, patch size for processing (default: 128)
         stride: int, sliding window stride (default: 64)
-        aug_type: str, augmentation type ('clean', 'same_aug', 'different_aug')
+        aug_type: str, augmentation type ('clean', 'different_aug')
         max_patches_per_batch: int, maximum patches per forward pass to avoid OOM (default: 16)
         log_fn: function or None, logging function for debug output
 
@@ -542,7 +542,7 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     1. Sample N training samples for decoder training
     2. Train decoder from scratch for max_iterations
     3. Evaluate at specified checkpoints (e.g., [100, 500])
-    4. Test with multiple augmentation types (clean, same_aug, different_aug)
+    4. Test with multiple augmentation types (clean, different_aug)
     5. Compute all metrics on full-resolution outputs
 
     Args:
@@ -564,37 +564,26 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
 
     # Sample N samples for training decoder
     samples_per_user = config['decoder_training']['samples_per_user']
-    if len(user_samples) < samples_per_user:
-        log_fn(f"WARNING: User {user_id} has only {len(user_samples)} samples "
-               f"(< {samples_per_user}). Using all samples for both train and eval. "
-               f"Results may be overly optimistic due to data leakage.")
-        train_samples = user_samples
-        eval_samples = user_samples  # Same as train (no separate eval set)
+    eval_samples_per_user = config['decoder_training'].get('eval_samples_per_user', 8)
+    max_iterations = config['decoder_training']['max_iterations']
+
+    # Training samples: use all available (up to samples_per_user)
+    if len(user_samples) <= samples_per_user:
+        train_samples = user_samples  # Use all available
+        log_fn(f"Using all {len(train_samples)} samples for training (< {samples_per_user} requested)")
     else:
-        # Randomly sample training set
         train_samples = random.sample(user_samples, samples_per_user)
+        log_fn(f"Using {samples_per_user} samples for training (sampled from {len(user_samples)})")
 
-        # Get remaining samples for evaluation
-        eval_samples_all = [s for s in user_samples if s not in train_samples]
+    # Evaluation samples: always use eval_samples_per_user (independent of training)
+    if len(user_samples) < eval_samples_per_user:
+        eval_samples = user_samples  # Not enough samples
+        log_fn(f"WARNING: Only {len(eval_samples)} samples available for eval (< {eval_samples_per_user} requested)")
+    else:
+        eval_samples = random.sample(user_samples, eval_samples_per_user)
+        log_fn(f"Using {eval_samples_per_user} samples for evaluation (sampled from {len(user_samples)})")
 
-        # Limit eval samples if specified in config
-        if 'eval_samples_per_user' in config['decoder_training']:
-            eval_samples_per_user = config['decoder_training']['eval_samples_per_user']
-            if len(eval_samples_all) > eval_samples_per_user:
-                eval_samples = random.sample(eval_samples_all, eval_samples_per_user)
-                log_fn(f"Using {eval_samples_per_user} eval samples (randomly selected from {len(eval_samples_all)} available)")
-            else:
-                eval_samples = eval_samples_all
-                log_fn(f"Using all {len(eval_samples_all)} available samples for eval (requested {eval_samples_per_user})")
-        else:
-            # Use all remaining samples (backward compatible)
-            eval_samples = eval_samples_all
-            if len(eval_samples) < 5:
-                log_fn(f"WARNING: Only {len(eval_samples)} eval samples for {user_id}. "
-                       f"Using all {len(user_samples)} samples for eval.")
-                eval_samples = user_samples  # Reuse all if eval set too small
-
-    log_fn(f"Training samples: {len(train_samples)}, Eval samples: {len(eval_samples)}")
+    log_fn(f"Training: {len(train_samples)} samples × {max_iterations} iterations, Evaluation: {len(eval_samples)} samples")
 
     # Create training dataloader (cropped patches)
     train_aug_config = config['augmentation']['train_aug']
@@ -606,15 +595,11 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     patch_size = config['decoder_training'].get('patch_size', 128)
     stride = config['decoder_training'].get('stride', 64)
 
-    # Create evaluation dataloaders (full resolution, 3 types)
+    # Create evaluation dataloaders (full resolution)
     eval_loaders = {
         'clean': create_fullimage_dataloader(
             base_dataset, eval_samples,
             config['augmentation']['clean'], batch_size=1
-        ),
-        'same_aug': create_fullimage_dataloader(
-            base_dataset, eval_samples,
-            config['augmentation'].get('eval_aug_same', {'augment': False}), batch_size=1
         ),
     }
 

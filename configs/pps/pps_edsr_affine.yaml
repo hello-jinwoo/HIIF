@@ -1,5 +1,5 @@
 # =============================================================================
-# Unified PPS Configuration with SwinIR Encoder
+# Unified PPS Configuration with EDSR Encoder
 # =============================================================================
 # This config file is used by BOTH train_pps.py and validate_pps.py
 #
@@ -9,8 +9,8 @@
 # - Validation Configuration: Used only by validate_pps.py
 #
 # Usage:
-#   python train_pps.py --config configs/pps/pps_swinir.yaml
-#   python validate_pps.py --config configs/pps/pps_swinir.yaml
+#   python train_pps.py --config configs/pps/pps_edsr.yaml
+#   python validate_pps.py --config configs/pps/pps_edsr.yaml
 # =============================================================================
 
 # =============================================================================
@@ -21,17 +21,15 @@ model:
   name: hiif-pps
   args:
     encoder_spec:
-      name: swinir
+      name: edsr-baseline
       args:
         no_upsampling: true
-        # SwinIR default params (auto-configured):
-        # - img_size: auto-adjusted to crop_size (128)
-        # - embed_dim: 180
-        # - depths: [6, 6, 6, 6, 6, 6]
-        # - num_heads: [6, 6, 6, 6, 6, 6]
-        # - window_size: 8
+        n_resblocks: 16
+        n_feats: 64
     hidden_dim: 256
     blocks: 16
+    input_type: 'all'
+    output_type: 'affine_coef'
     # user_ids will be auto-detected from dataset
 
 val_dataset:
@@ -44,9 +42,9 @@ val_dataset:
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 128  # Matches training crop_size for SwinIR
+      crop_size: 64
       augment: false
-  batch_size: 2
+  batch_size: 16
 
 data_norm:
   inp: {sub: [0.5], div: [0.5]}
@@ -67,33 +65,26 @@ train_dataset:
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 128  # Larger crop for SwinIR (better context for transformers)
+      crop_size: 128  # Standard crop for EDSR
       augment: true
       augment_params:
         brightness: 0.1
         contrast: 0.1
         saturation: 0.1
         hue: 0.05
-  batch_size: 2  # 2 samples × 4 inputs = 8 images (memory-efficient for SwinIR)
+  batch_size: 16  # 2 samples × 4 inputs = 8 images
   sampler:
     iterations_per_user: 16  # 16 iterations per user before switching
 
 optimizer:
   name: adam
   args:
-    lr: 1.0e-4  # Slightly lower than original SwinIR (4e-4) for stability with PPS
+    lr: 1.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 100  # Full training: 200 epochs (~40 days on single GPU)
+epoch_max: 100  # Full training: 200 epochs
 epoch_val: 20   # Validate every 20 epochs
 epoch_save: 20  # Save checkpoint every 20 epochs
-
-# Optional: Cosine LR with warmup (like original SwinIR)
-# Uncomment to enable:
-# cosine_lr_warmup:
-#   warmup_t: 10
-#   warmup_lr_init: 1.e-6
-#   lr_min: 1.e-6
 
 loss_schedule:
   schedule_type: linear
@@ -106,7 +97,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_swinir/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_edsr/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -117,18 +108,18 @@ decoder_training:
   eval_samples_per_user: 8
 
   # Batch size for decoder training
-  batch_size: 2  # 2 samples × 4 inputs = 8 images
+  batch_size: 16  # 2 samples × 4 inputs = 8 images
 
-  # Optimizer (same as training)
+  # Optimizer
   optimizer:
     name: adam
     args:
-      lr: 1.e-4  # Lower than main training for fine-tuning
+      lr: 1.e-4  # Same as main training
       betas: [0.9, 0.999]
 
-  # Loss weight scheduling (simplified for validation)
+  # Loss weight scheduling
   loss_schedule:
-    schedule_type: exponential
+    schedule_type: linear
     w_p_start: 0.5
     w_p_end: 1.2
 
@@ -139,14 +130,14 @@ decoder_training:
   max_iterations: 100
 
   # Patch-based evaluation settings
-  patch_size: 128
-  stride: 64
+  patch_size: 64
+  stride: 32
 
 # Augmentation configurations
 augmentation:
   # Training augmentation (used when training decoder with crop)
   train_aug:
-    crop_size: 128  # Matches training crop_size
+    crop_size: 64
     augment: true
     augment_params:
       brightness: 0.1
@@ -179,18 +170,17 @@ augmentation:
 # Validation scope
 num_val_users: null  # null = all users, or specify number (e.g., 2 for testing)
 
-# Metrics to compute (all available metrics shown below)
-# Comment out any metrics you don't want to compute
+# Metrics to compute
 metrics:
-  - psnr              # Peak Signal-to-Noise Ratio (always available)
+  - psnr              # Peak Signal-to-Noise Ratio
   - ssim              # Structural Similarity Index
   - lpips             # Learned Perceptual Image Patch Similarity
-  - delta_e_cie76     # CIE 1976 Delta E (LAB Euclidean distance)
-  - delta_e_oklab     # OKLab Delta E (modern, fast, perceptual)
-  - ciede2000         # CIE Delta E 2000 (current industry standard)
-  - delta_e_cam16     # CAM16-UCS Delta E (most accurate, slower)
-  - niqe              # Natural Image Quality Evaluator (no-reference)
+  - delta_e_cie76     # CIE 1976 Delta E
+  - delta_e_oklab     # OKLab Delta E
+  - ciede2000         # CIE Delta E 2000
+  - delta_e_cam16     # CAM16-UCS Delta E
+  - niqe              # Natural Image Quality Evaluator
 
 # Results
-save_images: true  # Save generated images
-save_interval: null  # Save at checkpoints only (not every iteration)
+save_images: true
+save_interval: null

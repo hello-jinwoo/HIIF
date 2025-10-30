@@ -89,15 +89,6 @@ augmentation:
       saturation: 0.1
       hue: 0.05
 
-  # Evaluation augmentation - same as training (full-resolution, no crop)
-  eval_aug_same:
-    augment: true
-    augment_params:
-      brightness: 0.1
-      contrast: 0.1
-      saturation: 0.1
-      hue: 0.05
-
   # Evaluation augmentation - different from training (full-resolution, no crop)
   eval_aug_different:
     augment: true
