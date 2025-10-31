@@ -145,20 +145,12 @@ augmentation:
       saturation: 0.1
       hue: 0.05
 
-  # Evaluation augmentation - same as training (full-resolution, no crop)
-  eval_aug_same:
+  # Evaluation augmentation (full-resolution, no crop)
+  # Tests robustness: augmented input vs clean GT
+  aug:
     augment: true
     augment_params:
-      brightness: 0.1
-      contrast: 0.1
-      saturation: 0.1
-      hue: 0.05
-
-  # Evaluation augmentation - different from training (full-resolution, no crop)
-  eval_aug_different:
-    augment: true
-    augment_params:
-      brightness: 0.2  # Stronger
+      brightness: 0.2  # Stronger than training
       contrast: 0.2
       saturation: 0.2
       hue: 0.1

@@ -40,7 +40,7 @@ val_dataset:
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 64
+      crop_size: 128
       augment: false
   batch_size: 16
 
@@ -77,10 +77,10 @@ train_dataset:
 optimizer:
   name: adam
   args:
-    lr: 5.e-4  # Standard learning rate for EDSR
+    lr: 1.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 100  # Full training: 200 epochs
+epoch_max: 200  # Full training: 200 epochs
 epoch_val: 20   # Validate every 20 epochs
 epoch_save: 20  # Save checkpoint every 20 epochs
 
@@ -95,7 +95,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e100_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e100_lr5e-4_lin_0.5_1.2/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -112,7 +112,7 @@ decoder_training:
   optimizer:
     name: adam
     args:
-      lr: 5.e-4  # Same as main training
+      lr: 1.e-4  # Same as main training
       betas: [0.9, 0.999]
 
   # Loss weight scheduling
@@ -122,10 +122,10 @@ decoder_training:
     w_p_end: 1.2
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [100, 250, 500]
+  eval_checkpoints: [100, 1000]
 
   # Maximum iterations for decoder training
-  max_iterations: 500
+  max_iterations: 1000
 
   # Patch-based evaluation settings
   patch_size: 128
@@ -143,20 +143,12 @@ augmentation:
       saturation: 0.1
       hue: 0.05
 
-  # Evaluation augmentation - same as training (full-resolution, no crop)
-  eval_aug_same:
+  # Evaluation augmentation (full-resolution, no crop)
+  # Tests robustness: augmented input vs clean GT
+  aug:
     augment: true
     augment_params:
-      brightness: 0.1
-      contrast: 0.1
-      saturation: 0.1
-      hue: 0.05
-
-  # Evaluation augmentation - different from training (full-resolution, no crop)
-  eval_aug_different:
-    augment: true
-    augment_params:
-      brightness: 0.2  # Stronger
+      brightness: 0.2  # Stronger than training
       contrast: 0.2
       saturation: 0.2
       hue: 0.1

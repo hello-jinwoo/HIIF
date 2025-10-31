@@ -312,11 +312,11 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
             if aug_type == 'clean':
                 prefer_idx = 0  # prefer_orig (clean, no augmentation)
                 non_prefer_idx = 2  # non_prefer_orig (clean, no augmentation)
-            elif aug_type in ['same_aug', 'different_aug']:
+            elif aug_type == 'aug':
                 prefer_idx = 1  # prefer_aug (with color augmentation)
                 non_prefer_idx = 3  # non_prefer_aug (with color augmentation)
             else:
-                raise ValueError(f"Unknown aug_type: {aug_type}")
+                raise ValueError(f"Unknown aug_type: {aug_type}. Must be 'clean' or 'aug'.")
 
             for i in range(B):
                 if max_samples is not None and sample_count >= max_samples:
@@ -440,9 +440,18 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                         else:
                             raise
 
-                # Get ground truths
-                gt_prefer = batch['gt_prefer'][i:i+1]
-                gt_non_prefer = batch['gt_non_prefer'][i:i+1]
+                # Get ground truths based on aug_type
+                if aug_type == 'clean':
+                    # Clean mode: use augmented GT (but since input is also clean, they match)
+                    gt_prefer = batch['gt_prefer'][i:i+1]
+                    gt_non_prefer = batch['gt_non_prefer'][i:i+1]
+                elif aug_type == 'aug':
+                    # Aug mode: use ORIGINAL (clean) GT, not augmented GT
+                    # This measures how well augmented input can match the original clean GT
+                    gt_prefer = batch['inp'][i, 0, :, :, :].unsqueeze(0)  # prefer_orig
+                    gt_non_prefer = batch['inp'][i, 2, :, :, :].unsqueeze(0)  # non_prefer_orig
+                else:
+                    raise ValueError(f"Unknown aug_type: {aug_type}")
 
                 # Compute GT-vs-GT metrics (baseline comparison)
                 metrics_gt_vs_gt = metrics_calc.compute_all(gt_prefer, gt_non_prefer)
@@ -603,11 +612,11 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
         ),
     }
 
-    # Only add different_aug if it exists in config
-    if 'eval_aug_different' in config['augmentation']:
-        eval_loaders['different_aug'] = create_fullimage_dataloader(
+    # Only add aug if it exists in config
+    if 'aug' in config['augmentation']:
+        eval_loaders['aug'] = create_fullimage_dataloader(
             base_dataset, eval_samples,
-            config['augmentation']['eval_aug_different'], batch_size=1
+            config['augmentation']['aug'], batch_size=1
         )
 
     # Load decoder for this user (create new from scratch)
