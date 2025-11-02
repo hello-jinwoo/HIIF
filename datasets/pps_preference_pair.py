@@ -6,7 +6,12 @@ Loads user preference data and corresponding image pairs.
 import os
 import json
 import glob
+import copy
+import hashlib
+import warnings
+from typing import Dict, List, Optional
 from PIL import Image
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -179,3 +184,137 @@ class PPSPreferencePairDataset(Dataset):
     def get_user_samples(self, user_id):
         """Get sample indices for a specific user."""
         return self.user_to_samples.get(user_id, [])
+
+    def split_samples_for_upe(self, num_upe_pairs: int = 16, seed: int = 42) -> Dict[str, Dict]:
+        """
+        Split samples for each user: first A for UPE extraction, rest for training.
+
+        Uses deterministic splitting based on cryptographic hash to ensure:
+        - Same split across multiple runs with same seed
+        - No seed collisions between different users
+        - Reproducibility across train and validation datasets
+
+        Args:
+            num_upe_pairs: Number of pairs to reserve for UPE extraction (default: 16)
+            seed: Global random seed for reproducibility (default: 42)
+
+        Returns:
+            split_info: Dict mapping user_id to split information:
+                {
+                    user_id: {
+                        'upe_indices': List[int],    # Indices for UPE extraction
+                        'train_indices': List[int],  # Indices for training
+                        'total': int,                # Total samples for this user
+                        'user_seed': int,            # User-specific seed (for debugging)
+                    }
+                }
+
+        Example:
+            >>> dataset = PPSPreferencePairDataset(...)
+            >>> split_info = dataset.split_samples_for_upe(num_upe_pairs=16, seed=42)
+            >>> print(f"User user_001 has {len(split_info['user_001']['upe_indices'])} UPE pairs")
+            >>> print(f"User user_001 has {len(split_info['user_001']['train_indices'])} training pairs")
+        """
+        split_info = {}
+
+        for user_id in self.get_user_ids():
+            user_samples = self.get_user_samples(user_id)
+
+            # Validate sufficient samples
+            if len(user_samples) < num_upe_pairs:
+                warnings.warn(
+                    f"User {user_id} has only {len(user_samples)} samples, "
+                    f"need {num_upe_pairs}. SKIPPING this user."
+                )
+                continue
+
+            # Create deterministic user-specific seed using cryptographic hash
+            # This prevents seed collisions and ensures reproducibility
+            hash_obj = hashlib.md5(f"{user_id}_{seed}".encode())
+            user_seed = int(hash_obj.hexdigest(), 16) % (2**32)
+
+            # Shuffle samples with user-specific seed
+            rng = np.random.RandomState(user_seed)
+            shuffled_indices = rng.permutation(user_samples).tolist()
+
+            # Split: first num_upe_pairs for UPE, rest for training
+            split_info[user_id] = {
+                'upe_indices': shuffled_indices[:num_upe_pairs],
+                'train_indices': shuffled_indices[num_upe_pairs:],
+                'total': len(user_samples),
+                'user_seed': user_seed,  # For debugging
+            }
+
+        print(f"Split {len(split_info)} users: {num_upe_pairs} pairs for UPE + "
+              f"{sum(len(info['train_indices']) for info in split_info.values())} pairs for training")
+
+        return split_info
+
+    def get_upe_samples(self, user_id: str, split_info: Dict[str, Dict]) -> List[Dict]:
+        """
+        Get UPE extraction samples for a specific user.
+
+        Args:
+            user_id: User identifier (e.g., 'user_response_example10')
+            split_info: Split information from split_samples_for_upe()
+
+        Returns:
+            List of sample dicts (same format as __getitem__)
+
+        Example:
+            >>> split_info = dataset.split_samples_for_upe()
+            >>> upe_samples = dataset.get_upe_samples('user_001', split_info)
+            >>> print(f"Got {len(upe_samples)} UPE samples")
+        """
+        if user_id not in split_info:
+            raise ValueError(f"User {user_id} not found in split_info. "
+                           f"Available users: {list(split_info.keys())}")
+
+        upe_indices = split_info[user_id]['upe_indices']
+        return [self[idx] for idx in upe_indices]
+
+    def create_train_subset(self, split_info: Dict[str, Dict]) -> 'PPSPreferencePairDataset':
+        """
+        Create a new dataset containing only training samples (excluding UPE samples).
+
+        This is useful for training to ensure UPE samples are not used in training loss,
+        maintaining proper separation between UPE extraction and training data.
+
+        Args:
+            split_info: Split information from split_samples_for_upe()
+
+        Returns:
+            A new PPSPreferencePairDataset containing only training samples
+
+        Example:
+            >>> split_info = dataset.split_samples_for_upe(num_upe_pairs=16)
+            >>> train_dataset = dataset.create_train_subset(split_info)
+            >>> print(f"Original dataset: {len(dataset)} samples")
+            >>> print(f"Training subset: {len(train_dataset)} samples")
+        """
+        # Collect all training indices
+        train_indices = []
+        for user_id, info in split_info.items():
+            train_indices.extend(info['train_indices'])
+
+        # Sort for deterministic ordering
+        train_indices = sorted(train_indices)
+
+        # Create a shallow copy of the dataset
+        subset = copy.copy(self)
+
+        # Replace samples with training subset
+        subset.samples = [self.samples[i] for i in train_indices]
+
+        # Rebuild user_to_samples mapping
+        subset.user_to_samples = {}
+        for new_idx, sample in enumerate(subset.samples):
+            user_id = sample['user_id']
+            if user_id not in subset.user_to_samples:
+                subset.user_to_samples[user_id] = []
+            subset.user_to_samples[user_id].append(new_idx)
+
+        print(f"Created training subset: {len(subset.samples)} samples "
+              f"(original: {len(self.samples)} samples)")
+
+        return subset

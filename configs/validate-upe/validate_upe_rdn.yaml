@@ -1,0 +1,104 @@
+# UPE Validation Configuration - RDN Encoder
+# Purpose: Full validation on all validation users with RDN encoder
+# Expected time: ~15-20 minutes for full validation split
+
+# ============================================================
+# Model Configuration (must match training config)
+# ============================================================
+model:
+  name: hiif-global-upe
+  args:
+    # Encoder (RDN - must match training)
+    encoder_spec:
+      name: rdn
+      args:
+        no_upsampling: true
+        G0: 64
+        RDNkSize: 3
+        RDNconfig: 'B'
+        scale: 1
+        n_colors: 3
+
+    hidden_dim: 384
+    blocks: 24
+
+    upe_processor_config:
+      input_dim: 1280
+      hidden_dim: 512
+      output_dim: 512
+      num_layers: 3
+      num_heads: 8
+      dropout: 0.1
+
+# ============================================================
+# UPE Configuration (must match training config)
+# ============================================================
+upe_config:
+  content_model: dino
+  color_model: clip
+  num_pairs: 16
+  normalize: true
+  content_dim: 768
+  color_dim: 512
+  cache_dir: ./cache/upe
+
+# ============================================================
+# Validation Dataset
+# ============================================================
+val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/validation
+      cache: in_memory
+
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 128     # Larger crop for better quality assessment
+      augment: false
+
+# ============================================================
+# Validation Settings
+# ============================================================
+min_eval_samples: 8
+skip_insufficient_users: true
+
+# ============================================================
+# Metrics to Compute (comprehensive)
+# ============================================================
+metrics:
+  - psnr
+  - ssim
+  - lpips
+  - delta_e_cie76
+  - ciede2000
+  # - delta_e_oklab
+  # - delta_e_cam16
+
+# ============================================================
+# Data Normalization (must match training)
+# ============================================================
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}
+
+# ============================================================
+# Notes
+# ============================================================
+# Usage:
+#   python validate_upe.py \
+#     --config configs/validate-upe/validate_upe_rdn.yaml \
+#     --checkpoint save/upe_rdn_v1/checkpoint_best.pth \
+#     --gpu 0
+#
+# Comparison with baseline PPS validation:
+#   Baseline: ~3 hours (1000 iter test-time training per user)
+#   UPE:      ~15-20 minutes (direct inference)
+#   Speedup:  ~10x faster
+#
+# RDN-specific notes:
+#   - RDN provides rich feature representation through dense connections
+#   - Similar speed to EDSR for validation
+#   - Dense connections may capture more local details for style transfer

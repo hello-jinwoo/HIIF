@@ -4,3 +4,4 @@ from . import mlp
 
 from . import hiif
 from . import hiif_pps
+from . import hiif_global_upe

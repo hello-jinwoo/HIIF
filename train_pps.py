@@ -118,8 +118,12 @@ def make_data_loaders():
     return train_loader, val_loader, train_base_dataset
 
 
-def prepare_training(user_ids):
+def prepare_training(user_ids, device):
     """Prepare model and encoder optimizer
+
+    Args:
+        user_ids: List of user IDs
+        device: torch.device to use for model
 
     Note: Decoder optimizer is created dynamically in training loop
     """
@@ -131,7 +135,7 @@ def prepare_training(user_ids):
     # Create model with user IDs (decoders not created in memory)
     model_config = config['model'].copy()
     model_config['args']['user_ids'] = user_ids
-    model = models.make(model_config).cuda()
+    model = models.make(model_config).to(device)
 
     log(f'Model created with {len(user_ids)} available users')
     log(f'Model: #params={utils.compute_num_params(model, text=True)}')
@@ -161,7 +165,7 @@ def prepare_training(user_ids):
     return model, encoder_optimizer, epoch_start, resume_info, ckpt_manager
 
 
-def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_manager):
+def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_manager, device):
     """Train for one epoch with dynamic decoder loading
 
     Args:
@@ -171,6 +175,7 @@ def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_ma
         loss_scheduler: LossWeightScheduler for w_p
         epoch: Current epoch number
         ckpt_manager: CheckpointManager for decoder save/load
+        device: torch.device to use
 
     Returns:
         Average training loss for the epoch
@@ -180,7 +185,7 @@ def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_ma
 
     # Data normalization
     data_norm = config['data_norm']
-    normalizer = DataNormalizer(data_norm, device='cuda')
+    normalizer = DataNormalizer(data_norm, device=device)
 
     pbar = tqdm(train_loader, leave=False, desc=f'Epoch {epoch}')
 
@@ -192,7 +197,7 @@ def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_ma
         # Move to GPU
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
-                batch[k] = v.cuda()
+                batch[k] = v.to(device)
 
         # Preprocess batch and normalize
         inp, coord, cell, gt_prefer, gt_non_prefer, user_indices = preprocess_pps_batch(batch)
@@ -267,7 +272,7 @@ def train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_ma
     return train_loss.item()
 
 
-def main(config_, save_path_):
+def main(config_, save_path_, device):
     """Main training function"""
     global config, log, writer, save_path
     config = config_
@@ -300,7 +305,7 @@ def main(config_, save_path_):
     log(f'User IDs (first 5): {user_ids[:5]}')
 
     # Prepare model and encoder optimizer
-    model, encoder_optimizer, epoch_start, resume_info, ckpt_manager = prepare_training(user_ids)
+    model, encoder_optimizer, epoch_start, resume_info, ckpt_manager = prepare_training(user_ids, device)
 
     # Create loss weight scheduler
     loss_config = config.get('loss_schedule', {})
@@ -336,7 +341,7 @@ def main(config_, save_path_):
         log_info = [f'Epoch {epoch}/{epoch_max}']
 
         # Train
-        train_loss = train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_manager)
+        train_loss = train(train_loader, model, encoder_optimizer, loss_scheduler, epoch, ckpt_manager, device)
         log_info.append(f'train_loss={train_loss:.4f}')
         log_info.append(f'w_p={loss_scheduler.get_weight():.3f}')
 
@@ -389,7 +394,8 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', default='0', help='GPU ID')
     args = parser.parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    # Create device from GPU ID (no longer using CUDA_VISIBLE_DEVICES)
+    device = torch.device(f'cuda:{args.gpu}')
 
     # Load config
     with open(args.config, 'r') as f:
@@ -402,4 +408,4 @@ if __name__ == '__main__':
         save_name += '_' + args.tag
     save_path = os.path.join('./save', save_name)
 
-    main(config, save_path)
+    main(config, save_path, device)
