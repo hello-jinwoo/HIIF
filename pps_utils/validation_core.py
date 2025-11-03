@@ -576,6 +576,14 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     eval_samples_per_user = config['decoder_training'].get('eval_samples_per_user', 8)
     max_iterations = config['decoder_training']['max_iterations']
 
+    # Random seed control for sample selection
+    sample_seed = config['decoder_training'].get('sample_selection_seed', -1)
+    if sample_seed >= 0:
+        random.seed(sample_seed)
+        log_fn(f"Sample selection seed: {sample_seed} (reproducible mode)")
+    else:
+        log_fn(f"Sample selection seed: random mode (seed={sample_seed})")
+
     # Training samples: use all available (up to samples_per_user)
     if len(user_samples) <= samples_per_user:
         train_samples = user_samples  # Use all available
