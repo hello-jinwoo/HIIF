@@ -87,7 +87,7 @@ epoch_save: 20  # Save checkpoint every 20 epochs
 loss_schedule:
   schedule_type: linear
   w_p_start: 0.5
-  w_p_end: 1.2
+  w_p_end: 0.9
   # total_iterations auto-computed as: epoch_max × batches_per_epoch
 
 # =============================================================================
@@ -95,7 +95,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e100_lr5e-4_lin_0.5_1.2/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e200_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -119,13 +119,13 @@ decoder_training:
   loss_schedule:
     schedule_type: linear
     w_p_start: 0.5
-    w_p_end: 1.2
+    w_p_end: 0.9
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [100, 1000]
+  eval_checkpoints: [100, 1000, 2000]
 
   # Maximum iterations for decoder training
-  max_iterations: 1000
+  max_iterations: 2000
 
   # Patch-based evaluation settings
   patch_size: 128
