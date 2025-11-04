@@ -99,6 +99,8 @@ encoder_checkpoint: ./save/train_hiif_pps_small_edsr_rgb_rgb_e200_lr1e-4_lin_0.5
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
+  sample_selection_seed: 42
+
   # Number of samples per user for training decoder
   samples_per_user: 64
 
@@ -122,7 +124,7 @@ decoder_training:
     w_p_end: 0.9
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [100, 1000, 2000]
+  eval_checkpoints: [1000, 2000]
 
   # Maximum iterations for decoder training
   max_iterations: 2000

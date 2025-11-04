@@ -44,6 +44,11 @@ decoder_training:
   # Number of samples per user for evaluation (randomly selected from remaining)
   eval_samples_per_user: 8
 
+  # Random seed for sample selection
+  # -1: random mode (different samples each run)
+  # >=0: fixed seed for reproducibility (same samples each run with same seed)
+  sample_selection_seed: -1
+
   # Batch size for decoder training
   batch_size: 2  # 2 samples × 4 inputs = 8 images
 
