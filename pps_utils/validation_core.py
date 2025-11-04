@@ -592,15 +592,31 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
         train_samples = random.sample(user_samples, samples_per_user)
         log_fn(f"Using {samples_per_user} samples for training (sampled from {len(user_samples)})")
 
-    # Evaluation samples: always use eval_samples_per_user (independent of training)
-    if len(user_samples) < eval_samples_per_user:
-        eval_samples = user_samples  # Not enough samples
-        log_fn(f"WARNING: Only {len(eval_samples)} samples available for eval (< {eval_samples_per_user} requested)")
-    else:
-        eval_samples = random.sample(user_samples, eval_samples_per_user)
-        log_fn(f"Using {eval_samples_per_user} samples for evaluation (sampled from {len(user_samples)})")
+    # CRITICAL: Evaluation samples must be EXCLUSIVE (no overlap with training)
+    # Sample from remaining samples only
+    remaining_samples = [s for s in user_samples if s not in train_samples]
 
-    log_fn(f"Training: {len(train_samples)} samples × {max_iterations} iterations, Evaluation: {len(eval_samples)} samples")
+    if len(remaining_samples) == 0:
+        # Edge case: all samples used for training
+        log_fn(f"WARNING: No remaining samples for evaluation (all {len(user_samples)} used for training)")
+        log_fn(f"         Using training samples for evaluation (data leakage, for debugging only!)")
+        eval_samples = random.sample(train_samples, min(eval_samples_per_user, len(train_samples)))
+    elif len(remaining_samples) < eval_samples_per_user:
+        # Not enough remaining samples
+        eval_samples = remaining_samples
+        log_fn(f"WARNING: Only {len(eval_samples)} samples available for eval after train split")
+    else:
+        # Normal case: sample from remaining
+        eval_samples = random.sample(remaining_samples, eval_samples_per_user)
+        log_fn(f"Using {eval_samples_per_user} samples for evaluation (sampled from {len(remaining_samples)} remaining)")
+
+    # Verify no overlap (critical assertion)
+    overlap = set(train_samples) & set(eval_samples)
+    if len(overlap) > 0:
+        log_fn(f"ERROR: Train/eval overlap detected! {len(overlap)} samples: {overlap}")
+        raise ValueError(f"Train/eval samples must not overlap! Found {len(overlap)} overlapping samples.")
+
+    log_fn(f"Sample split verified: {len(train_samples)} train + {len(eval_samples)} eval = {len(train_samples) + len(eval_samples)} (exclusive, no overlap)")
 
     # Create training dataloader (cropped patches)
     train_aug_config = config['augmentation']['train_aug']

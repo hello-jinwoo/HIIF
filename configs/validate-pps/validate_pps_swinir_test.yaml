@@ -3,7 +3,7 @@
 # Matches training config: train_pps_swinir.yaml
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_swinir4/encoder/epoch-last.pth
+encoder_checkpoint: ./save/pilot/train_hiif_pps_swinir4/encoder/epoch-last.pth
 
 # Model configuration (must match training)
 model:
@@ -28,7 +28,7 @@ val_dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/validation
+      response_dir: ./load/PPS/responses/validation_small
       cache: in_memory
   wrapper:
     name: pps-color-augmented
