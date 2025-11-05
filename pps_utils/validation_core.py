@@ -597,49 +597,61 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
             'required_samples': min_required
         }
 
-    # Adaptive train/eval split: prioritize eval_samples_per_user, use rest for training
+    # Adaptive train/eval split: ALWAYS prioritize eval_samples_per_user (FIXED)
+    # Training samples are ADAPTIVE (flexible)
     total_available = len(user_samples)
-    ideal_total = samples_per_user + eval_samples_per_user
 
-    if total_available >= ideal_total:
-        # Normal case: have enough samples
-        train_count = samples_per_user
-        eval_count = eval_samples_per_user
+    # CRITICAL: eval_count is ALWAYS the requested amount (non-negotiable)
+    eval_count = eval_samples_per_user
+
+    # Training samples adapt based on what's available after reserving eval samples
+    ideal_train = samples_per_user
+    available_for_train = total_available - eval_count
+
+    if available_for_train >= ideal_train:
+        # Normal case: have enough samples for both requested train + requested eval
+        train_count = ideal_train
         log_fn(f"Normal split: {train_count} train + {eval_count} eval (have {total_available} available)")
     else:
-        # Insufficient samples: prioritize eval_samples_per_user, use rest for training
-        eval_count = eval_samples_per_user
-        train_count = total_available - eval_count
+        # Adaptive case: use all available samples for training (after reserving eval)
+        train_count = available_for_train
         log_fn(f"ADAPTIVE split: {train_count} train + {eval_count} eval (only {total_available} available)")
-        log_fn(f"               Requested {samples_per_user} train but using {train_count} (adaptive)")
+        log_fn(f"               Requested {ideal_train} train but using {train_count} (adaptive)")
 
-    # Sample training set
-    if len(user_samples) <= train_count:
-        train_samples = user_samples
-        log_fn(f"Using all {len(train_samples)} samples for training")
+    # Sample EVALUATION set FIRST (to guarantee the fixed amount)
+    eval_samples = random.sample(user_samples, eval_count)
+    log_fn(f"Sampled {eval_count} evaluation samples (FIXED, from {len(user_samples)} total)")
+
+    # Sample TRAINING set from REMAINING samples only (CRITICAL for exclusive split)
+    remaining_samples = [s for s in user_samples if s not in eval_samples]
+
+    if len(remaining_samples) < train_count:
+        # This should never happen with the adaptive logic above
+        log_fn(f"CRITICAL ERROR: Logic bug - only {len(remaining_samples)} remaining for {train_count} train samples")
+        log_fn(f"                Expected {train_count} = {total_available} - {eval_count}")
+        raise ValueError(f"Validation logic error: insufficient samples for training after eval split")
+
+    if len(remaining_samples) == train_count:
+        # Use all remaining samples
+        train_samples = remaining_samples
+        log_fn(f"Using all {len(train_samples)} remaining samples for training")
     else:
-        train_samples = random.sample(user_samples, train_count)
-        log_fn(f"Using {train_count} samples for training (sampled from {len(user_samples)})")
+        # Sample from remaining
+        train_samples = random.sample(remaining_samples, train_count)
+        log_fn(f"Sampled {train_count} training samples (from {len(remaining_samples)} remaining)")
 
-    # Sample evaluation set from REMAINING samples only (CRITICAL for exclusive split)
-    remaining_samples = [s for s in user_samples if s not in train_samples]
-
-    if len(remaining_samples) < eval_count:
-        # Should not happen with adaptive logic, but handle gracefully
-        log_fn(f"ERROR: Logic error - only {len(remaining_samples)} remaining for {eval_count} eval samples")
-        eval_samples = remaining_samples
-        log_fn(f"       Using all {len(eval_samples)} remaining samples for evaluation")
-    else:
-        eval_samples = random.sample(remaining_samples, eval_count)
-        log_fn(f"Using {eval_count} samples for evaluation (sampled from {len(remaining_samples)} remaining)")
-
-    # Verify no overlap (should never fail with adaptive logic)
+    # Verify no overlap (should never fail with new sampling order)
     overlap = set(train_samples) & set(eval_samples)
     if len(overlap) > 0:
         log_fn(f"CRITICAL ERROR: Train/eval overlap detected! {len(overlap)} samples: {overlap}")
         raise ValueError(f"Train/eval samples must not overlap! Found {len(overlap)} overlapping samples.")
 
-    log_fn(f"Sample split verified: {len(train_samples)} train + {len(eval_samples)} eval = {len(train_samples) + len(eval_samples)} (exclusive, no overlap)")
+    # STRICT CHECK: Verify we got exactly the requested eval samples
+    if len(eval_samples) != eval_samples_per_user:
+        log_fn(f"CRITICAL ERROR: Got {len(eval_samples)} eval samples, expected {eval_samples_per_user}")
+        raise ValueError(f"Failed to sample requested {eval_samples_per_user} evaluation samples, got {len(eval_samples)}")
+
+    log_fn(f"Sample split verified: {len(train_samples)} train + {len(eval_samples)} eval = {len(train_samples) + len(eval_samples)} (exclusive, no overlap, eval count GUARANTEED)")
 
     # Create training dataloader (cropped patches)
     train_aug_config = config['augmentation']['train_aug']
