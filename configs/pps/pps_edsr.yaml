@@ -124,10 +124,10 @@ decoder_training:
     w_p_end: 0.9
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [250, 500]
+  eval_checkpoints: [500, 1000]
 
   # Maximum iterations for decoder training
-  max_iterations: 500
+  max_iterations: 1000
 
   # Patch-based evaluation settings
   patch_size: 128
