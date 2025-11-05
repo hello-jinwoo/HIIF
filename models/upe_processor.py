@@ -32,6 +32,51 @@ import torch.nn as nn
 import math
 
 
+class UPEProjection(nn.Module):
+    """
+    Per-vector MLP projection for raw UPE embeddings.
+
+    This layer processes each UPE vector independently to learn optimal
+    scaling and transformation, addressing normalization-induced weak signals.
+
+    Args:
+        input_dim: Raw UPE dimension (default: 1280 = 768 DINO + 512 CLIP)
+        output_dim: Projected dimension (default: 256)
+
+    Input:
+        upe: (N, input_dim) or (B, N, input_dim)
+
+    Output:
+        projected: (N, output_dim) or (B, N, output_dim)
+    """
+
+    def __init__(self, input_dim: int = 1280, output_dim: int = 256):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
+        # Two-layer MLP with expansion
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, output_dim * 2),
+            nn.ReLU(),
+            nn.Linear(output_dim * 2, output_dim)
+        )
+
+    def forward(self, upe: torch.Tensor) -> torch.Tensor:
+        """
+        Project each UPE vector independently.
+
+        Args:
+            upe: (N, input_dim) or (B, N, input_dim)
+
+        Returns:
+            projected: (N, output_dim) or (B, N, output_dim)
+        """
+        # nn.Linear operates on last dimension, so this applies to each vector
+        return self.mlp(upe)
+
+
 class UPEProcessor(nn.Module):
     """
     Process raw UPE with shallow transformer.
@@ -48,7 +93,8 @@ class UPEProcessor(nn.Module):
                  output_dim: int = 512,
                  num_layers: int = 3,
                  num_heads: int = 8,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1,
+                 projection_dim: int = None):  # NEW: Optional projection
         super().__init__()
 
         self.input_dim = input_dim
@@ -56,6 +102,7 @@ class UPEProcessor(nn.Module):
         self.output_dim = output_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
+        self.projection_dim = projection_dim
 
         # Validation
         if hidden_dim % num_heads != 0:
@@ -63,8 +110,16 @@ class UPEProcessor(nn.Module):
                 f"hidden_dim ({hidden_dim}) must be divisible by num_heads ({num_heads})"
             )
 
+        # Optional projection layer (processes each UPE vector independently)
+        if projection_dim is not None:
+            self.projection = UPEProjection(input_dim, projection_dim)
+            proj_input_dim = projection_dim
+        else:
+            self.projection = None
+            proj_input_dim = input_dim
+
         # Input projection
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.input_proj = nn.Linear(proj_input_dim, hidden_dim)
 
         # Shallow transformer
         encoder_layer = nn.TransformerEncoderLayer(
@@ -86,6 +141,8 @@ class UPEProcessor(nn.Module):
 
         print(f"[UPEProcessor] Initialized:")
         print(f"  Input dim: {input_dim}")
+        if projection_dim is not None:
+            print(f"  Projection dim: {projection_dim} (learnable MLP)")
         print(f"  Hidden dim: {hidden_dim}")
         print(f"  Output dim: {output_dim}")
         print(f"  Transformer: {num_layers} layers, {num_heads} heads")
@@ -126,8 +183,14 @@ class UPEProcessor(nn.Module):
                 f"Expected input_dim={self.input_dim}, got {upe_raw.shape[-1]}"
             )
 
+        # Optional per-vector projection (learns to amplify/rescale normalized UPEs)
+        if self.projection is not None:
+            x = self.projection(upe_raw)  # (B, N, projection_dim)
+        else:
+            x = upe_raw
+
         # Input projection
-        x = self.input_proj(upe_raw)  # (B, N, hidden_dim)
+        x = self.input_proj(x)  # (B, N, hidden_dim)
 
         # Transformer
         x = self.transformer(x)  # (B, N, hidden_dim)

@@ -54,7 +54,7 @@ class HIIF_Global_UPE(nn.Module):
     """
 
     def __init__(self, encoder_spec, hidden_dim=384, blocks=24,
-                 upe_dim=512, upe_processor_config=None):
+                 upe_dim=512, upe_processor_config=None, crop_size=None):
         """
         Args:
             encoder_spec: Encoder configuration dict
@@ -70,6 +70,8 @@ class HIIF_Global_UPE(nn.Module):
                     'num_layers': 3,
                     'num_heads': 8,
                 }
+            crop_size: Input crop size (optional)
+                If provided and encoder is SwinIR, will auto-set img_size if not specified
         """
         super().__init__()
 
@@ -87,6 +89,11 @@ class HIIF_Global_UPE(nn.Module):
         if 'args' not in encoder_spec_copy:
             encoder_spec_copy['args'] = {}
         encoder_spec_copy['args']['n_colors'] = 3
+
+        # Auto-set img_size from crop_size for SwinIR if not explicitly provided
+        if crop_size is not None and encoder_spec_copy.get('name') == 'swinir':
+            if 'img_size' not in encoder_spec_copy['args']:
+                encoder_spec_copy['args']['img_size'] = crop_size
 
         # Shared encoder
         self.encoder = models.make(encoder_spec_copy)

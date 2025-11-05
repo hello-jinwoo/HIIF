@@ -28,22 +28,33 @@ class PPSPreferencePairDataset(Dataset):
     Each sample contains a prefer and non-prefer image pair for a specific user.
     """
 
-    def __init__(self, root_path, response_dir, user_id=None, cache='none'):
+    def __init__(self, root_path, response_dir, user_id=None, cache='none', dataset_name=None):
         """
         Args:
             root_path: str, path to images root (e.g., './load/PPS/images')
-            response_dir: str, path to responses directory (e.g., './load/PPS/responses/train')
+            response_dir: str, path to responses directory (e.g., './load/PPS/responses/train_toy')
             user_id: str or None, specific user ID from JSON filename
                      (e.g., 'user_response_example10'). If None, load all users.
             cache: str, caching strategy:
                    'none' - Load from disk each time
                    'in_memory' - Load all images into RAM
+            dataset_name: str or None, explicit dataset name for UPE cache organization
+                         (e.g., 'train_toy', 'validation_small')
+                         If None, auto-extracted from response_dir
         """
         super().__init__()
 
         self.root_path = root_path
+        self.response_dir = response_dir
         self.cache = cache
         self.user_id = user_id
+
+        # Auto-detect dataset name from response_dir if not provided
+        if dataset_name is None:
+            # Extract last directory name from response_dir
+            # e.g., './load/PPS/responses/train_toy' -> 'train_toy'
+            dataset_name = os.path.basename(os.path.normpath(response_dir))
+        self.dataset_name = dataset_name
 
         # Transforms
         self.to_tensor = transforms.ToTensor()
@@ -122,6 +133,7 @@ class PPSPreferencePairDataset(Dataset):
             )
 
         print(f"Loaded {len(self.samples)} preference pairs from {len(json_files)} JSON files")
+        print(f"Dataset name: {self.dataset_name}")
         print(f"Users: {sorted(self.user_to_samples.keys())}")
 
     def _load_image(self, path):

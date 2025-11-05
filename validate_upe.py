@@ -193,9 +193,10 @@ def validate_user_with_upe(
     )
 
     # Evaluate with direct inference
-    psnr_prefer_list = []
-    psnr_non_prefer_list = []
-    all_metrics = {name: [] for name in config.get('metrics', ['psnr', 'ssim', 'lpips'])}
+    # Store metrics for both prefer and non_prefer GTs separately
+    metric_names = config.get('metrics', ['psnr', 'ssim', 'lpips'])
+    metrics_prefer = {name: [] for name in metric_names}
+    metrics_non_prefer = {name: [] for name in metric_names}
 
     model.eval()
     with torch.no_grad():
@@ -242,37 +243,50 @@ def validate_user_with_upe(
             gt_prefer_denorm = normalizer.denormalize_gt(gt_prefer)
             gt_non_prefer_denorm = normalizer.denormalize_gt(gt_non_prefer)
 
-            # Compute PSNR
-            psnr_prefer = utils.calc_psnr(pred_denorm, gt_prefer_denorm).item()
-            psnr_non_prefer = utils.calc_psnr(pred_denorm, gt_non_prefer_denorm).item()
+            # Compute all metrics against PREFER GT
+            metrics_dict_prefer = metrics_calc.compute_all(pred_denorm, gt_prefer_denorm)
+            for name, value in metrics_dict_prefer.items():
+                if name in metrics_prefer:
+                    metrics_prefer[name].append(value)
 
-            psnr_prefer_list.append(psnr_prefer)
-            psnr_non_prefer_list.append(psnr_non_prefer)
-
-            # Compute other metrics
-            metric_dict = metrics_calc.compute_all(pred_denorm, gt_prefer_denorm)
-            for name, value in metric_dict.items():
-                if name in all_metrics:
-                    all_metrics[name].append(value)
+            # Compute all metrics against NON_PREFER GT
+            metrics_dict_non_prefer = metrics_calc.compute_all(pred_denorm, gt_non_prefer_denorm)
+            for name, value in metrics_dict_non_prefer.items():
+                if name in metrics_non_prefer:
+                    metrics_non_prefer[name].append(value)
 
     # Aggregate metrics
     results = {
         'num_eval_samples': len(eval_sample_indices),
-        'metrics': {},
+        'metrics': {
+            'prefer_gt': {},
+            'non_prefer_gt': {},
+            'gaps': {}  # prefer - non_prefer for each metric
+        },
         'upe_info': {
             'num_upe_pairs': num_upe,
             'upe_cached': upe_cached,
         }
     }
 
-    # Average metrics (convert to Python float for JSON serialization)
-    results['metrics']['psnr_prefer'] = float(np.mean(psnr_prefer_list))
-    results['metrics']['psnr_non_prefer'] = float(np.mean(psnr_non_prefer_list))
-    results['metrics']['psnr_gap'] = results['metrics']['psnr_prefer'] - results['metrics']['psnr_non_prefer']
-
-    for name, values in all_metrics.items():
+    # Average metrics for PREFER GT (convert to Python float for JSON serialization)
+    for name, values in metrics_prefer.items():
         if values:
-            results['metrics'][name] = float(np.mean(values))
+            results['metrics']['prefer_gt'][name] = float(np.mean(values))
+
+    # Average metrics for NON_PREFER GT
+    for name, values in metrics_non_prefer.items():
+        if values:
+            results['metrics']['non_prefer_gt'][name] = float(np.mean(values))
+
+    # Calculate gaps (prefer - non_prefer) for all metrics
+    # For PSNR/SSIM: higher is better, so positive gap = prefer is better
+    # For LPIPS/Delta E: lower is better, so negative gap = prefer is better
+    for name in metric_names:
+        if name in results['metrics']['prefer_gt'] and name in results['metrics']['non_prefer_gt']:
+            results['metrics']['gaps'][name] = (
+                results['metrics']['prefer_gt'][name] - results['metrics']['non_prefer_gt'][name]
+            )
 
     return results
 
@@ -285,25 +299,52 @@ def aggregate_results(all_results: Dict[str, Dict]) -> Dict:
         all_results: Dict of per-user results
 
     Returns:
-        avg_metrics: Dict with mean and std for each metric
+        avg_metrics: Dict with mean and std for each metric, separated by prefer/non_prefer GT
     """
     if not all_results:
         return {}
 
-    # Collect all metric names
-    metric_names = list(next(iter(all_results.values()))['metrics'].keys())
+    # Get all metric names from first user's results
+    first_result = next(iter(all_results.values()))
 
-    aggregated = {}
-    for metric_name in metric_names:
+    aggregated = {
+        'prefer_gt': {},
+        'non_prefer_gt': {},
+        'gaps': {}
+    }
+
+    # Aggregate prefer GT metrics
+    for metric_name in first_result['metrics']['prefer_gt'].keys():
         values = [
-            result['metrics'][metric_name]
+            result['metrics']['prefer_gt'][metric_name]
             for result in all_results.values()
-            if metric_name in result['metrics']
+            if metric_name in result['metrics']['prefer_gt']
         ]
-
         if values:
-            aggregated[metric_name] = float(np.mean(values))
-            aggregated[f"{metric_name}_std"] = float(np.std(values))
+            aggregated['prefer_gt'][metric_name] = float(np.mean(values))
+            aggregated['prefer_gt'][f"{metric_name}_std"] = float(np.std(values))
+
+    # Aggregate non_prefer GT metrics
+    for metric_name in first_result['metrics']['non_prefer_gt'].keys():
+        values = [
+            result['metrics']['non_prefer_gt'][metric_name]
+            for result in all_results.values()
+            if metric_name in result['metrics']['non_prefer_gt']
+        ]
+        if values:
+            aggregated['non_prefer_gt'][metric_name] = float(np.mean(values))
+            aggregated['non_prefer_gt'][f"{metric_name}_std"] = float(np.std(values))
+
+    # Aggregate gaps
+    for metric_name in first_result['metrics']['gaps'].keys():
+        values = [
+            result['metrics']['gaps'][metric_name]
+            for result in all_results.values()
+            if metric_name in result['metrics']['gaps']
+        ]
+        if values:
+            aggregated['gaps'][metric_name] = float(np.mean(values))
+            aggregated['gaps'][f"{metric_name}_std"] = float(np.std(values))
 
     return aggregated
 
@@ -356,14 +397,28 @@ def save_summary_csv(avg_metrics: Dict, csv_path: Path):
         writer = csv.writer(f)
 
         # Header
-        writer.writerow(['Metric', 'Mean', 'Std'])
+        writer.writerow(['Category', 'Metric', 'Mean', 'Std'])
 
-        # Write averages
-        for metric, value in sorted(avg_metrics.items()):
+        # Write prefer GT metrics
+        for metric, value in sorted(avg_metrics['prefer_gt'].items()):
             if not metric.endswith('_std'):
                 std_key = f"{metric}_std"
-                std_value = avg_metrics.get(std_key, 0.0)
-                writer.writerow([metric.upper(), f"{value:.4f}", f"{std_value:.4f}"])
+                std_value = avg_metrics['prefer_gt'].get(std_key, 0.0)
+                writer.writerow(['Prefer GT', metric.upper(), f"{value:.4f}", f"{std_value:.4f}"])
+
+        # Write non_prefer GT metrics
+        for metric, value in sorted(avg_metrics['non_prefer_gt'].items()):
+            if not metric.endswith('_std'):
+                std_key = f"{metric}_std"
+                std_value = avg_metrics['non_prefer_gt'].get(std_key, 0.0)
+                writer.writerow(['Non-Prefer GT', metric.upper(), f"{value:.4f}", f"{std_value:.4f}"])
+
+        # Write gaps
+        for metric, value in sorted(avg_metrics['gaps'].items()):
+            if not metric.endswith('_std'):
+                std_key = f"{metric}_std"
+                std_value = avg_metrics['gaps'].get(std_key, 0.0)
+                writer.writerow(['Gap', metric.upper(), f"{value:+.4f}", f"{std_value:.4f}"])
 
     print(f"✅ Summary saved to {csv_path}")
 
@@ -477,15 +532,22 @@ def main():
     )
     log("✅ UPE extractor ready")
 
-    # Setup UPE cache
-    cache_dir = upe_config.get('cache_dir', './cache/upe')
-    upe_cache = UPECache(cache_dir=cache_dir, max_memory_size=100, preload_to_gpu=False)
-    log(f"✅ UPE cache initialized at: {cache_dir}")
-
-    # Load dataset
+    # Load dataset first to get dataset_name
     log("\nLoading validation dataset...")
     base_dataset = datasets.make(config['val_dataset']['dataset'])
     log(f"✅ Loaded {len(base_dataset)} samples")
+
+    # Setup UPE cache with dataset-specific subdirectory
+    cache_base_dir = upe_config.get('cache_dir', './cache/upe')
+    dataset_name = base_dataset.dataset_name
+    upe_cache = UPECache(
+        cache_dir=cache_base_dir,
+        max_memory_size=100,
+        preload_to_gpu=False,
+        dataset_name=dataset_name
+    )
+    log(f"✅ UPE cache initialized at: {upe_cache.cache_dir}")
+    log(f"  Dataset name: {dataset_name}")
 
     # Check valid users
     log("\nChecking user sample counts...")
@@ -553,11 +615,29 @@ def main():
     log(f"Validation time: {validation_time/60:.1f} minutes")
     log("")
     log("Average Metrics:")
-    for metric, value in sorted(avg_metrics.items()):
+    log("")
+    log("  Prefer GT (prediction vs. preferred GT):")
+    for metric, value in sorted(avg_metrics['prefer_gt'].items()):
         if not metric.endswith('_std'):
             std_key = f"{metric}_std"
-            std_value = avg_metrics.get(std_key, 0.0)
-            log(f"  {metric.upper()}: {value:.4f} ± {std_value:.4f}")
+            std_value = avg_metrics['prefer_gt'].get(std_key, 0.0)
+            log(f"    {metric.upper()}: {value:.4f} ± {std_value:.4f}")
+    log("")
+    log("  Non-Prefer GT (prediction vs. non-preferred GT):")
+    for metric, value in sorted(avg_metrics['non_prefer_gt'].items()):
+        if not metric.endswith('_std'):
+            std_key = f"{metric}_std"
+            std_value = avg_metrics['non_prefer_gt'].get(std_key, 0.0)
+            log(f"    {metric.upper()}: {value:.4f} ± {std_value:.4f}")
+    log("")
+    log("  Gaps (prefer - non_prefer):")
+    for metric, value in sorted(avg_metrics['gaps'].items()):
+        if not metric.endswith('_std'):
+            std_key = f"{metric}_std"
+            std_value = avg_metrics['gaps'].get(std_key, 0.0)
+            # Add indicator for direction (+ means prefer is better for PSNR/SSIM, - means prefer is better for LPIPS/Delta E)
+            indicator = "↑" if value > 0 else "↓"
+            log(f"    {metric.upper()}: {value:+.4f} ± {std_value:.4f} {indicator}")
 
 
 if __name__ == '__main__':

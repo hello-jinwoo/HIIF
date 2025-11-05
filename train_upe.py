@@ -164,21 +164,65 @@ def make_upe_data_loader(spec, upe_cache, upe_config, tag='', base_dataset=None)
     return loader, base_dataset, split_info
 
 
-def make_data_loaders(upe_cache, upe_config):
-    """Create train and validation data loaders with UPE support"""
+def make_data_loaders(upe_cache_base_dir, upe_config):
+    """
+    Create train and validation data loaders with UPE support.
+
+    Creates dataset-specific UPE caches for train and validation datasets.
+
+    Args:
+        upe_cache_base_dir: Base directory for UPE caches
+        upe_config: UPE configuration dict
+
+    Returns:
+        train_loader, val_loader, train_base_dataset, train_split, val_split
+    """
+    # Create train base dataset first to get dataset_name
+    train_spec = config.get('train_dataset')
+    train_base_dataset = datasets.make(train_spec['dataset'])
+    train_dataset_name = train_base_dataset.dataset_name
+
+    # Create train-specific UPE cache
+    train_upe_cache = UPECache(
+        cache_dir=upe_cache_base_dir,
+        max_memory_size=100,
+        dataset_name=train_dataset_name
+    )
+    log(f'Train UPE Cache: {train_upe_cache.cache_dir}')
+
+    # Create train loader
     train_loader, train_base_dataset, train_split = make_upe_data_loader(
-        config.get('train_dataset'),
-        upe_cache,
+        train_spec,
+        train_upe_cache,
         upe_config,
-        tag='train'
+        tag='train',
+        base_dataset=train_base_dataset
     )
-    val_loader, _, val_split = make_upe_data_loader(
-        config.get('val_dataset'),
-        upe_cache,
-        upe_config,
-        tag='val',
-        base_dataset=train_base_dataset  # Share base dataset
-    )
+
+    # Create val base dataset to get dataset_name
+    val_spec = config.get('val_dataset')
+    if val_spec is not None:
+        val_base_dataset = datasets.make(val_spec['dataset'])
+        val_dataset_name = val_base_dataset.dataset_name
+
+        # Create val-specific UPE cache
+        val_upe_cache = UPECache(
+            cache_dir=upe_cache_base_dir,
+            max_memory_size=100,
+            dataset_name=val_dataset_name
+        )
+        log(f'Val UPE Cache: {val_upe_cache.cache_dir}')
+
+        # Create val loader
+        val_loader, _, val_split = make_upe_data_loader(
+            val_spec,
+            val_upe_cache,
+            upe_config,
+            tag='val',
+            base_dataset=val_base_dataset
+        )
+    else:
+        val_loader, val_split = None, None
 
     return train_loader, val_loader, train_base_dataset, train_split, val_split
 
@@ -396,17 +440,16 @@ def main(config_, save_path_, device):
     with open(os.path.join(save_path, 'config.yaml'), 'w') as f:
         yaml.dump(config, f, sort_keys=False)
 
-    # Initialize UPE cache
+    # Initialize UPE cache (dataset-specific caches will be created in make_data_loaders)
     upe_config = config['upe_config']
-    upe_cache_dir = upe_config.get('cache_dir', './cache/upe')
-    upe_cache = UPECache(cache_dir=upe_cache_dir, max_memory_size=100)
+    upe_cache_base_dir = upe_config.get('cache_dir', './cache/upe')
 
-    log(f'UPE Cache initialized at: {upe_cache_dir}')
-    upe_cache.print_stats()
+    log(f'UPE Cache base directory: {upe_cache_base_dir}')
+    log(f'  Dataset-specific caches will be created automatically')
 
     # Create data loaders with UPE support
     train_loader, val_loader, train_base_dataset, train_split, val_split = \
-        make_data_loaders(upe_cache, upe_config)
+        make_data_loaders(upe_cache_base_dir, upe_config)
 
     # Prepare model and optimizer
     model, optimizer, epoch_start, best_val_psnr = prepare_training(device)

@@ -49,16 +49,28 @@ class UPECache:
     def __init__(self,
                  cache_dir: str = './cache/upe',
                  max_memory_size: int = 100,
-                 preload_to_gpu: bool = True):
+                 preload_to_gpu: bool = True,
+                 dataset_name: Optional[str] = None):
         """
         Initialize UPE cache.
 
         Args:
-            cache_dir: Directory to store cache files
+            cache_dir: Base directory to store cache files
             max_memory_size: Maximum number of UPEs in memory cache
             preload_to_gpu: Whether to keep loaded UPEs on GPU
+            dataset_name: Optional dataset name to create subdirectory
+                         (e.g., 'train_toy', 'validation_small')
+                         If provided, cache will be stored in cache_dir/dataset_name/
         """
-        self.cache_dir = Path(cache_dir)
+        self.base_cache_dir = Path(cache_dir)
+        self.dataset_name = dataset_name
+
+        # Create dataset-specific subdirectory if dataset_name is provided
+        if dataset_name:
+            self.cache_dir = self.base_cache_dir / dataset_name
+        else:
+            self.cache_dir = self.base_cache_dir
+
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.max_memory_size = max_memory_size
@@ -76,6 +88,8 @@ class UPECache:
         self.metadata = self._load_metadata()
 
         print(f"[UPECache] Initialized at {self.cache_dir}")
+        if dataset_name:
+            print(f"  Dataset name: {dataset_name}")
         print(f"  Max memory size: {max_memory_size}")
         print(f"  Preload to GPU: {preload_to_gpu}")
 

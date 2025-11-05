@@ -96,7 +96,7 @@ class WindowAttention(nn.Module):
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
@@ -860,7 +860,12 @@ class SwinIR(nn.Module):
         return flops
 
 @register('swinir')
-def make_swinir(no_upsampling=False, n_colors=3):
-    return SwinIR(in_chans=n_colors)
+def make_swinir(no_upsampling=False, n_colors=3, **kwargs):
+    # Handle no_upsampling flag
+    if no_upsampling and 'upsampler' not in kwargs:
+        kwargs['upsampler'] = 'none'
+
+    # Pass through all configurable parameters
+    return SwinIR(in_chans=n_colors, **kwargs)
 
 

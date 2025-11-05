@@ -1,0 +1,17 @@
+# UPE Extraction Configuration
+# Content Model: CLIP | Color Model: SAM
+# Output: (16, 1280) = clip(512) + sam(768)
+
+# Feature extraction models
+content_model: clip         # CLIP for content features
+content_model_variant: ViT-B/16     # 512 dims
+color_model: sam            # SAM for color/style features
+color_model_variant: vit_b  # 768 dims
+
+# UPE settings
+num_pairs: 16               # Number of preference pairs for UPE extraction
+normalize: true             # L2-normalize embeddings
+
+# Adaptive projection (optional)
+use_adaptive_projection: false  # No projection needed (compatible dimensions)
+projection_dim: 768             # Target dimension (not used when false)

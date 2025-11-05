@@ -1,13 +1,13 @@
---extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.1.1+cu118
-torchvision==0.16.1+cu118
-torchaudio==2.1.1+cu118
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.0+cu121
+torchvision==0.19.0+cu121
+torchaudio==2.4.0+cu121
 numpy<2.0.0
 tqdm
 einops
 typing_extensions
 imageio
-timm
+timm>=0.6.0,<0.9.0  # Pin for PyTorch 2.3 compatibility (timm >=0.9 has breaking changes)
 pytorch_wavelets
 opencv-python
 matplotlib
@@ -24,6 +24,7 @@ colour-science>=0.4.4  # For CAM16-UCS color difference metric
 git+https://github.com/openai/CLIP.git  # CLIP for feature extraction
 ftfy  # Required by CLIP
 regex  # Required by CLIP
+# Note: DINOv3 loaded via torch.hub (no extra dependencies needed)
 
 # Testing dependencies
 pytest>=7.4.0

@@ -48,7 +48,7 @@ def calc_lpips(pred, gt, net='alex', device='cuda'):
         pred: torch.Tensor (B, 3, H, W), predicted images in [0, 1]
         gt: torch.Tensor (B, 3, H, W), ground truth images in [0, 1]
         net: str, backbone network ('alex', 'vgg')
-        device: str, 'cuda' or 'cpu'
+        device: str, 'cuda', 'cuda:0', or 'cpu'
 
     Returns:
         float: LPIPS distance in [0, 1], lower is better
@@ -61,9 +61,13 @@ def calc_lpips(pred, gt, net='alex', device='cuda'):
     # Initialize model (will be cached in future calls)
     if not hasattr(calc_lpips, 'loss_fn'):
         calc_lpips.loss_fn = lpips.LPIPS(net=net)
-        if device == 'cuda' and torch.cuda.is_available():
-            calc_lpips.loss_fn = calc_lpips.loss_fn.cuda()
+        if 'cuda' in device and torch.cuda.is_available():
+            calc_lpips.loss_fn = calc_lpips.loss_fn.to(device)
         calc_lpips.loss_fn.eval()
+    else:
+        # Move model to correct device if it's not already there
+        if 'cuda' in device and torch.cuda.is_available():
+            calc_lpips.loss_fn = calc_lpips.loss_fn.to(device)
 
     with torch.no_grad():
         # Transform from [0, 1] to [-1, 1]
