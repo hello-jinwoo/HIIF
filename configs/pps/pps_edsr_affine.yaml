@@ -38,7 +38,7 @@ val_dataset:
     args:
       root_path: ./load/PPS/images
       response_dir: ./load/PPS/responses/validation_small
-      cache: in_memory
+      cache: none
   wrapper:
     name: pps-color-augmented
     args:
@@ -60,7 +60,7 @@ train_dataset:
     args:
       root_path: ./load/PPS/images
       response_dir: ./load/PPS/responses/train_small
-      cache: in_memory
+      cache: none
       # Auto-loads all users from response_dir
   wrapper:
     name: pps-color-augmented

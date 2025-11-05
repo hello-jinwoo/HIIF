@@ -29,6 +29,8 @@ model:
     hidden_dim: 256
     blocks: 16
     # user_ids will be auto-detected from dataset
+    input_type: 'all'
+    output_type: 'rgb_residual' 
 
 val_dataset:
   dataset:
@@ -57,7 +59,7 @@ train_dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/train
+      response_dir: ./load/PPS/responses/train_small
       cache: none
       # Auto-loads all users from response_dir
   wrapper:
@@ -80,14 +82,14 @@ optimizer:
     lr: 1.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 50  # Full training: 200 epochs
-epoch_val: 10   # Validate every 20 epochs
-epoch_save: 10  # Save checkpoint every 20 epochs
+epoch_max: 100  # Full training: 200 epochs
+epoch_val: 20   # Validate every 20 epochs
+epoch_save: 20  # Save checkpoint every 20 epochs
 
 loss_schedule:
-  schedule_type: logarithmic
+  schedule_type: linear
   w_p_start: 0.5
-  w_p_end: 1.2
+  w_p_end: 0.9
   # total_iterations auto-computed as: epoch_max × batches_per_epoch
 
 # =============================================================================
@@ -95,7 +97,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_edsr_rgb_rgb_e100_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_small_edsr_all_rgb_e100_lr1e-4_lin_0.5_0.9/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -119,9 +121,9 @@ decoder_training:
 
   # Loss weight scheduling
   loss_schedule:
-    schedule_type: logarithmic
+    schedule_type: linear
     w_p_start: 0.5
-    w_p_end: 1.2
+    w_p_end: 0.9
 
   # Evaluation checkpoints (iterations)
   eval_checkpoints: [250, 500]
