@@ -179,16 +179,18 @@ augmentation:
 # Validation scope
 num_val_users: null  # null = all users, or specify number (e.g., 2 for testing)
 
-# Metrics to compute
+# Metrics to compute (optimized for speed)
+# PERFORMANCE NOTE: CIEDE2000 and CAM16-UCS are CPU-bound and very slow on full-resolution images
+# They are disabled by default to achieve 7-10× faster validation.
 metrics:
-  - psnr              # Peak Signal-to-Noise Ratio
-  - ssim              # Structural Similarity Index
-  - lpips             # Learned Perceptual Image Patch Similarity
-  - delta_e_cie76     # CIE 1976 Delta E
-  - delta_e_oklab     # OKLab Delta E
-  - ciede2000         # CIE Delta E 2000
-  - delta_e_cam16     # CAM16-UCS Delta E
-  - niqe              # Natural Image Quality Evaluator
+  - psnr              # Peak Signal-to-Noise Ratio (fast)
+  - ssim              # Structural Similarity Index (fast, GPU)
+  - lpips             # Learned Perceptual Image Patch Similarity (moderate, GPU)
+  - delta_e_cie76     # CIE 1976 Delta E (fast, GPU-accelerated LAB)
+  - delta_e_oklab     # OKLab Delta E (fast, GPU-accelerated)
+  # - ciede2000       # CIE Delta E 2000 (SLOW: ~760ms/call, CPU-bound)
+  # - delta_e_cam16   # CAM16-UCS Delta E (VERY SLOW: ~2280ms/call, CPU-bound)
+  # - niqe            # Natural Image Quality Evaluator (not implemented)
 
 # Results
 save_images: true
