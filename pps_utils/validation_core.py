@@ -19,6 +19,7 @@ Key Features:
 
 import os
 import random
+import time
 from typing import Dict, List, Optional, Callable
 from PIL import Image
 
@@ -32,6 +33,35 @@ import datasets
 import utils
 from pps_utils.loss_scheduler import LossWeightScheduler, compute_dual_gt_loss
 from pps_utils.data_processing import DataNormalizer, preprocess_pps_batch
+
+
+# Global coordinate cache for patch processing
+# Key: (patch_size, device_str), Value: coord tensor
+_COORD_CACHE = {}
+
+
+def get_cached_coord(patch_size: int, device: torch.device) -> torch.Tensor:
+    """
+    Get cached coordinate tensor for a given patch size.
+
+    Coordinates are identical for all patches of the same size, so we cache them
+    to avoid redundant computation (make_coord involves meshgrid, which is expensive).
+
+    Args:
+        patch_size: int, size of the patch
+        device: torch.device, device to create tensor on
+
+    Returns:
+        torch.Tensor, shape (patch_size, patch_size, 2), cached coordinate tensor
+    """
+    cache_key = (patch_size, str(device))
+
+    if cache_key not in _COORD_CACHE:
+        # Create coordinate tensor once
+        coord = utils.make_coord([patch_size, patch_size], flatten=False).to(device)
+        _COORD_CACHE[cache_key] = coord
+
+    return _COORD_CACHE[cache_key]
 
 
 def save_image_tensor(tensor: torch.Tensor, path: str) -> None:
@@ -127,7 +157,8 @@ def denormalize(tensor: torch.Tensor, data_norm: Dict) -> torch.Tensor:
 
 
 def create_dataloader_with_aug(base_dataset, user_samples: List[int],
-                               aug_config: Dict, batch_size: int) -> DataLoader:
+                               aug_config: Dict, batch_size: int,
+                               num_workers: int = 8, batch_image: Optional[int] = None) -> DataLoader:
     """
     Create dataloader with specific augmentation config.
 
@@ -137,30 +168,67 @@ def create_dataloader_with_aug(base_dataset, user_samples: List[int],
         base_dataset: PPSPreferencePairDataset
         user_samples: list of sample indices
         aug_config: dict, augmentation configuration
-        batch_size: int
+        batch_size: int, total number of patches per batch
+        num_workers: int, number of DataLoader worker processes (default: 8)
+        batch_image: int or None, number of images to load per batch (default: None)
+            - If None, uses batch_size images (1 patch per image, current behavior)
+            - If specified, loads batch_image images and extracts (batch_size // batch_image)
+              patches from each image for better I/O efficiency
 
     Returns:
         DataLoader
     """
+    from datasets.pps_wrapper import pps_multi_crop_collate_fn
+
+    # Validate batch_image parameter
+    if batch_image is not None:
+        if batch_image <= 0:
+            raise ValueError(f"batch_image must be positive, got {batch_image}")
+        if batch_size % batch_image != 0:
+            raise ValueError(
+                f"batch_size ({batch_size}) must be divisible by batch_image ({batch_image}). "
+                f"Got remainder: {batch_size % batch_image}"
+            )
+
+        # Calculate patches per image
+        patches_per_image = batch_size // batch_image
+        dataloader_batch_size = batch_image
+
+        # Add patches_per_image to augmentation config
+        aug_config_with_patches = aug_config.copy()
+        aug_config_with_patches['patches_per_image'] = patches_per_image
+    else:
+        # Original behavior: 1 patch per image
+        aug_config_with_patches = aug_config
+        dataloader_batch_size = batch_size
+
     # Create subset
     subset = Subset(base_dataset, user_samples)
 
     # Wrap with augmentation
     wrapper_config = {
         'name': 'pps-color-augmented',
-        'args': aug_config
+        'args': aug_config_with_patches
     }
     wrapped_dataset = datasets.make(wrapper_config, args={'dataset': subset})
 
-    # Create loader
-    loader = DataLoader(wrapped_dataset, batch_size=batch_size,
-                       shuffle=True, num_workers=4, pin_memory=True)
+    # Create loader with custom collate function
+    # num_workers: configurable via config file for parallel data loading
+    loader = DataLoader(
+        wrapped_dataset,
+        batch_size=dataloader_batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        collate_fn=pps_multi_crop_collate_fn
+    )
 
     return loader
 
 
 def create_fullimage_dataloader(base_dataset, user_samples: List[int],
-                                aug_config: Dict, batch_size: int = 1) -> DataLoader:
+                                aug_config: Dict, batch_size: int = 1,
+                                num_workers: int = 0) -> DataLoader:
     """
     Create dataloader for full-resolution image evaluation.
 
@@ -171,6 +239,7 @@ def create_fullimage_dataloader(base_dataset, user_samples: List[int],
         user_samples: list of sample indices
         aug_config: dict, augmentation configuration
         batch_size: int (default: 1, recommended for full-res images)
+        num_workers: int (default: 0, to avoid CPU contention during metrics)
 
     Returns:
         DataLoader
@@ -185,9 +254,9 @@ def create_fullimage_dataloader(base_dataset, user_samples: List[int],
     }
     wrapped_dataset = datasets.make(wrapper_config, args={'dataset': subset})
 
-    # Create loader (batch_size=1 recommended for full-resolution)
+    # Create loader
     loader = DataLoader(wrapped_dataset, batch_size=batch_size,
-                       shuffle=False, num_workers=2, pin_memory=True)
+                       shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return loader
 
@@ -251,7 +320,8 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                     patch_size: int = 128, stride: int = 64,
                     aug_type: str = 'clean',
                     max_patches_per_batch: int = 16,
-                    log_fn: Optional[Callable] = None) -> Dict:
+                    log_fn: Optional[Callable] = None,
+                    enable_profiling: bool = False) -> Dict:
     """
     Evaluate decoder on evaluation set with full-resolution patch-based processing.
 
@@ -267,11 +337,23 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
         aug_type: str, augmentation type ('clean', 'different_aug')
         max_patches_per_batch: int, maximum patches per forward pass to avoid OOM (default: 16)
         log_fn: function or None, logging function for debug output
+        enable_profiling: bool, whether to enable timing profiling (default: False)
 
     Returns:
         dict: aggregated metrics
     """
     model.eval()
+
+    # Profiling accumulators
+    if enable_profiling:
+        profiling_times = {
+            'extract_patches': 0.0,
+            'batch_prepare': 0.0,
+            'forward_pass': 0.0,
+            'stitch_patches': 0.0,
+            'metrics_compute': 0.0,
+            'total_per_image': []
+        }
 
     # Metrics storage - use all available metrics from metrics_calc
     # New structure: measure both predictions against both GTs
@@ -322,6 +404,9 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                 if max_samples is not None and sample_count >= max_samples:
                     break
 
+                if enable_profiling:
+                    t_image_start = time.time()
+
                 user_id = batch['user_id'][i] if isinstance(batch['user_id'], list) else batch['user_id'][i].item()
                 image_id = batch['image_id'][i] if isinstance(batch['image_id'], list) else batch['image_id'][i]
 
@@ -334,36 +419,48 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                     H, W = inp.shape[-2:]
 
                     # Extract patches
+                    if enable_profiling:
+                        t_extract_start = time.time()
                     patches, positions, original_shape = utils.extract_patches(
                         inp, patch_size=patch_size, stride=stride
                     )
                     num_patches = len(patches)
+                    if enable_profiling:
+                        profiling_times['extract_patches'] += time.time() - t_extract_start
 
                     try:
-                        # Prepare batched inputs for all patches
-                        patches_list, coords_list, cells_list = [], [], []
+                        # OPTIMIZED: Batch all operations instead of looping
+                        if enable_profiling:
+                            t_batch_start = time.time()
 
-                        for patch in patches:
-                            # Normalize patch
-                            patch_norm = normalizer.normalize_input(patch.unsqueeze(0)).squeeze(0)
-                            patches_list.append(patch_norm)
+                        # Stack all patches first
+                        patches_batch = torch.stack(patches)  # (num_patches, 3, patch_h, patch_w)
+                        patch_h, patch_w = patches_batch.shape[-2:]
 
-                            # Coordinate for patch
-                            patch_h, patch_w = patch.shape[-2:]
-                            coord_patch = utils.make_coord([patch_h, patch_w], flatten=False).cuda()
-                            coords_list.append(coord_patch)
+                        # Normalize all patches at once (single call)
+                        patches_batch = normalizer.normalize_input(patches_batch)
 
-                            # Cell for patch
-                            cell_patch = torch.tensor([2 / patch_h, 2 / patch_w]).cuda()
-                            cells_list.append(cell_patch)
+                        # Get cached coordinates (created once, reused for all patches)
+                        coord_template = get_cached_coord(patch_h, patches_batch.device)
 
-                        # Stack into batches
-                        patches_batch = torch.stack(patches_list)  # (num_patches, 3, patch_h, patch_w)
-                        coords_batch = torch.stack(coords_list)    # (num_patches, patch_h, patch_w, 2)
-                        cells_batch = torch.stack(cells_list)      # (num_patches, 2)
+                        # Expand coordinates for all patches (single expand, not a loop!)
+                        coords_batch = coord_template.unsqueeze(0).expand(num_patches, -1, -1, -1)
+                        # coords_batch: (num_patches, patch_h, patch_w, 2)
+
+                        # Create cells as batched tensor (single tensor creation)
+                        cell_value = torch.tensor([2 / patch_h, 2 / patch_w], device=patches_batch.device)
+                        cells_batch = cell_value.unsqueeze(0).expand(num_patches, -1)
+                        # cells_batch: (num_patches, 2)
+
                         user_indices_batch = [user_id] * num_patches
 
+                        if enable_profiling:
+                            profiling_times['batch_prepare'] += time.time() - t_batch_start
+
                         # MINI-BATCHED FORWARD PASS (to avoid OOM)
+                        if enable_profiling:
+                            t_forward_start = time.time()
+
                         pred_patches_list_batched = []
 
                         for start_idx in range(0, num_patches, max_patches_per_batch):
@@ -388,9 +485,16 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                         # Convert to list
                         pred_patches_list = [pred_patches_denorm[j] for j in range(num_patches)]
 
+                        if enable_profiling:
+                            profiling_times['forward_pass'] += time.time() - t_forward_start
+
                         # Stitch patches back to full resolution
+                        if enable_profiling:
+                            t_stitch_start = time.time()
                         pred_full = utils.stitch_patches(pred_patches_list, positions, original_shape)
                         # pred_full: (3, H, W)
+                        if enable_profiling:
+                            profiling_times['stitch_patches'] += time.time() - t_stitch_start
 
                         # Expand to batch dimension and store
                         predictions[input_type] = pred_full.unsqueeze(0)  # (1, 3, H, W)
@@ -411,6 +515,7 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                             torch.cuda.empty_cache()
 
                             # FALLBACK: Sequential processing (one patch at a time)
+                            # Note: Sequential fallback already uses optimized batching from above
                             try:
                                 pred_patches_list_seq = []
                                 for j in range(num_patches):
@@ -454,6 +559,9 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                     raise ValueError(f"Unknown aug_type: {aug_type}")
 
                 # Compute GT-vs-GT metrics (baseline comparison)
+                if enable_profiling:
+                    t_metrics_start = time.time()
+
                 metrics_gt_vs_gt = metrics_calc.compute_all(gt_prefer, gt_non_prefer)
                 for k, v in metrics_gt_vs_gt.items():
                     if k in metrics_storage['gt_vs_gt']:
@@ -468,6 +576,7 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                               f"prefer={('prefer' in predictions)}, non_prefer={('non_prefer' in predictions)}")
 
                 # Compute metrics: both predictions against both GTs
+                # Note: Using vectorized metrics (calc_delta_e_cie76, calc_ciede2000, calc_delta_e_cam16_ucs)
                 if 'prefer' in predictions and 'non_prefer' in predictions:
                     # Prefer GT: measure both predictions
                     metrics_prefer_from_prefer = metrics_calc.compute_all(predictions['prefer'], gt_prefer)
@@ -492,6 +601,10 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
                     for k, v in metrics_nonprefer_from_nonprefer.items():
                         if k in metrics_storage['non_prefer_gt']['from_non_prefer_input']:
                             metrics_storage['non_prefer_gt']['from_non_prefer_input'][k].append(v)
+
+                if enable_profiling:
+                    profiling_times['metrics_compute'] += time.time() - t_metrics_start
+                    profiling_times['total_per_image'].append(time.time() - t_image_start)
 
                 # Save images if requested
                 if save_images_dir is not None and sample_count < 5:  # Save first 5
@@ -537,6 +650,44 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
         },
         'num_samples': sample_count
     }
+
+    # Output profiling results if enabled
+    if enable_profiling and log_fn:
+        log_fn(f"\n{'='*60}")
+        log_fn(f"PROFILING RESULTS (sample_count={sample_count})")
+        log_fn(f"{'='*60}")
+
+        # Calculate averages
+        total_images = len(profiling_times['total_per_image'])
+        if total_images > 0:
+            avg_per_image = np.mean(profiling_times['total_per_image'])
+            log_fn(f"Average time per image: {avg_per_image:.3f}s")
+
+            # Breakdown of time per operation (accumulated)
+            log_fn(f"\nTime breakdown (accumulated):")
+            log_fn(f"  Extract patches:  {profiling_times['extract_patches']:7.3f}s ({profiling_times['extract_patches']/total_images:.3f}s/img)")
+            log_fn(f"  Batch prepare:    {profiling_times['batch_prepare']:7.3f}s ({profiling_times['batch_prepare']/total_images:.3f}s/img)")
+            log_fn(f"  Forward pass:     {profiling_times['forward_pass']:7.3f}s ({profiling_times['forward_pass']/total_images:.3f}s/img)")
+            log_fn(f"  Stitch patches:   {profiling_times['stitch_patches']:7.3f}s ({profiling_times['stitch_patches']/total_images:.3f}s/img)")
+            log_fn(f"  Metrics compute:  {profiling_times['metrics_compute']:7.3f}s ({profiling_times['metrics_compute']/total_images:.3f}s/img)")
+
+            # Calculate percentage breakdown
+            total_tracked = sum([
+                profiling_times['extract_patches'],
+                profiling_times['batch_prepare'],
+                profiling_times['forward_pass'],
+                profiling_times['stitch_patches'],
+                profiling_times['metrics_compute']
+            ])
+
+            log_fn(f"\nPercentage breakdown:")
+            log_fn(f"  Extract patches:  {100.0 * profiling_times['extract_patches'] / total_tracked:6.2f}%")
+            log_fn(f"  Batch prepare:    {100.0 * profiling_times['batch_prepare'] / total_tracked:6.2f}%")
+            log_fn(f"  Forward pass:     {100.0 * profiling_times['forward_pass'] / total_tracked:6.2f}%")
+            log_fn(f"  Stitch patches:   {100.0 * profiling_times['stitch_patches'] / total_tracked:6.2f}%")
+            log_fn(f"  Metrics compute:  {100.0 * profiling_times['metrics_compute'] / total_tracked:6.2f}%")
+
+        log_fn(f"{'='*60}\n")
 
     return aggregated
 
@@ -656,18 +807,26 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     # Create training dataloader (cropped patches)
     train_aug_config = config['augmentation']['train_aug']
     batch_size = config['decoder_training']['batch_size']
+    num_workers = config['decoder_training'].get('num_workers', 8)  # Default: 8
+    batch_image = config['decoder_training'].get('batch_image', None)  # Optional: batch_image for efficient I/O
     train_loader = create_dataloader_with_aug(base_dataset, train_samples,
-                                             train_aug_config, batch_size)
+                                             train_aug_config, batch_size, num_workers,
+                                             batch_image=batch_image)
 
     # Get patch processing parameters
     patch_size = config['decoder_training'].get('patch_size', 128)
     stride = config['decoder_training'].get('stride', 64)
 
+    # Get evaluation dataloader parameters
+    eval_batch_size = config['decoder_training'].get('eval_batch_size', 1)
+    eval_num_workers = config['decoder_training'].get('eval_num_workers', 0)
+
     # Create evaluation dataloaders (full resolution)
     eval_loaders = {
         'clean': create_fullimage_dataloader(
             base_dataset, eval_samples,
-            config['augmentation']['clean'], batch_size=1
+            config['augmentation']['clean'], batch_size=eval_batch_size,
+            num_workers=eval_num_workers
         ),
     }
 
@@ -675,7 +834,8 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     if 'aug' in config['augmentation']:
         eval_loaders['aug'] = create_fullimage_dataloader(
             base_dataset, eval_samples,
-            config['augmentation']['aug'], batch_size=1
+            config['augmentation']['aug'], batch_size=eval_batch_size,
+            num_workers=eval_num_workers
         )
 
     # Load decoder for this user (create new from scratch)
@@ -712,19 +872,43 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
 
     encoder_optimizer = None  # Not used, encoder is frozen
 
+    # Profiling for decoder training
+    training_times = {
+        'data_loading': [],
+        'forward_backward': [],
+        'total_step': []
+    }
+    enable_training_profiling = True  # Profile first checkpoint
+
     pbar = tqdm(total=max_iterations, desc=f'Training {user_id}', leave=False)
 
     while iteration < max_iterations:
+        if enable_training_profiling:
+            t_step_start = time.time()
+
         # Get batch (cycle through dataloader)
+        if enable_training_profiling:
+            t_data_start = time.time()
+
         try:
             batch = next(train_loader_iter)
         except StopIteration:
             train_loader_iter = iter(train_loader)
             batch = next(train_loader_iter)
 
+        if enable_training_profiling:
+            training_times['data_loading'].append(time.time() - t_data_start)
+
         # Train one step
+        if enable_training_profiling:
+            t_train_start = time.time()
+
         loss = train_decoder_one_step(model, batch, encoder_optimizer, decoder_optimizer,
                                      loss_scheduler, config['data_norm'])
+
+        if enable_training_profiling:
+            training_times['forward_backward'].append(time.time() - t_train_start)
+            training_times['total_step'].append(time.time() - t_step_start)
 
         iteration += 1
         pbar.update(1)
@@ -749,14 +933,16 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
                 # Get max_patches_per_batch from config (default: 16)
                 max_patches_per_batch = config['decoder_training'].get('max_patches_per_batch', 16)
 
-                # Evaluate
+                # Evaluate (enable profiling for first checkpoint only to reduce log spam)
+                enable_prof = (iteration == eval_checkpoints[0])
                 metrics = evaluate_decoder(model, eval_loader, metrics_calc,
                                          config['data_norm'], max_samples=20,
                                          save_images_dir=images_dir,
                                          patch_size=patch_size, stride=stride,
                                          aug_type=aug_type,
                                          max_patches_per_batch=max_patches_per_batch,
-                                         log_fn=log_fn)
+                                         log_fn=log_fn,
+                                         enable_profiling=enable_prof)
 
                 checkpoint_results['aug_types'][aug_type] = metrics
 
@@ -807,6 +993,29 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
                 log_fn(f"      {'[AVERAGE]':18s} - {', '.join(parts)}")
 
             results['checkpoints'][f'iter_{iteration:04d}'] = checkpoint_results
+
+            # Output decoder training profiling (first checkpoint only)
+            if iteration == eval_checkpoints[0] and len(training_times['total_step']) > 0:
+                avg_total = np.mean(training_times['total_step'])
+                avg_data = np.mean(training_times['data_loading'])
+                avg_train = np.mean(training_times['forward_backward'])
+
+                log_fn("")
+                log_fn("=" * 60)
+                log_fn(f"DECODER TRAINING PROFILING (first {len(training_times['total_step'])} iterations)")
+                log_fn("=" * 60)
+                log_fn(f"Average time per iteration: {avg_total:.3f}s")
+                log_fn("")
+                log_fn("Time breakdown:")
+                log_fn(f"  Data loading:     {avg_data:.3f}s ({100.0 * avg_data / avg_total:6.2f}%)")
+                log_fn(f"  Forward/Backward: {avg_train:.3f}s ({100.0 * avg_train / avg_total:6.2f}%)")
+                log_fn("=" * 60)
+                log_fn("")
+
+                # Clear profiling data after first checkpoint
+                training_times['data_loading'].clear()
+                training_times['forward_backward'].clear()
+                training_times['total_step'].clear()
 
     pbar.close()
 

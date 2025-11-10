@@ -197,3 +197,201 @@ def oklab_to_rgb(oklab):
     )
 
     return rgb.clamp(0, 1)
+
+
+def rgb_to_xyz(rgb):
+    """Convert sRGB to CIE XYZ color space (D65 illuminant).
+
+    Args:
+        rgb: Tensor of shape (B, 3, H, W) with values in [0, 1]
+
+    Returns:
+        xyz: Tensor of shape (B, 3, H, W)
+             X in [0, ~0.95]
+             Y in [0, 1.0]
+             Z in [0, ~1.09]
+    """
+    # Step 1: sRGB to Linear RGB (inverse gamma correction)
+    linear_mask = rgb <= 0.04045
+    linear_rgb = torch.where(
+        linear_mask,
+        rgb / 12.92,
+        torch.pow((rgb + 0.055) / 1.055, 2.4)
+    )
+
+    # Step 2: Linear RGB to XYZ (D65 illuminant, sRGB primaries)
+    # Matrix from http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html
+    M = torch.tensor([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041]
+    ], dtype=rgb.dtype, device=rgb.device)
+
+    B, C, H, W = rgb.shape
+    linear_rgb_flat = linear_rgb.permute(0, 2, 3, 1).reshape(-1, 3)
+    xyz_flat = torch.matmul(linear_rgb_flat, M.T)
+    xyz = xyz_flat.reshape(B, H, W, 3).permute(0, 3, 1, 2)
+
+    return xyz
+
+
+def xyz_to_lab(xyz, illuminant='D65'):
+    """Convert CIE XYZ to CIE LAB color space.
+
+    Args:
+        xyz: Tensor of shape (B, 3, H, W)
+        illuminant: str, 'D65' or 'D50'
+
+    Returns:
+        lab: Tensor of shape (B, 3, H, W)
+             L in [0, 100]
+             a in [-128, 127] approximately
+             b in [-128, 127] approximately
+    """
+    # Reference white points (from http://www.brucelindbloom.com/index.html?Eqn_ChromAdapt.html)
+    if illuminant == 'D65':
+        ref_white = torch.tensor([0.95047, 1.00000, 1.08883],
+                                 dtype=xyz.dtype, device=xyz.device)
+    elif illuminant == 'D50':
+        ref_white = torch.tensor([0.96422, 1.00000, 0.82521],
+                                 dtype=xyz.dtype, device=xyz.device)
+    else:
+        raise ValueError(f"Unknown illuminant: {illuminant}")
+
+    # Reshape for broadcasting: (3, 1, 1)
+    ref_white = ref_white.reshape(3, 1, 1)
+
+    # Normalize by reference white
+    xyz_normalized = xyz / ref_white
+
+    # Piecewise function for Lab
+    # f(t) = t^(1/3) if t > (6/29)^3
+    #      = (1/3) * ((29/6)^2) * t + (4/29) otherwise
+    delta = 6.0 / 29.0
+    delta_cubed = delta ** 3
+
+    # Compute f(t)
+    mask = xyz_normalized > delta_cubed
+    f_xyz = torch.where(
+        mask,
+        torch.pow(xyz_normalized, 1.0 / 3.0),
+        (xyz_normalized / (3 * delta ** 2)) + (4.0 / 29.0)
+    )
+
+    # Extract f(X), f(Y), f(Z)
+    fx = f_xyz[:, 0:1, :, :]
+    fy = f_xyz[:, 1:2, :, :]
+    fz = f_xyz[:, 2:3, :, :]
+
+    # Compute Lab
+    L = 116 * fy - 16
+    a = 500 * (fx - fy)
+    b = 200 * (fy - fz)
+
+    return torch.cat([L, a, b], dim=1)
+
+
+def rgb_to_lab(rgb, illuminant='D65'):
+    """Convert sRGB to CIE LAB color space (GPU-accelerated).
+
+    This is a differentiable, batched implementation that processes
+    all images on GPU, providing significant speedup over CPU-based
+    scikit-image rgb2lab.
+
+    Args:
+        rgb: Tensor of shape (B, 3, H, W) with values in [0, 1]
+        illuminant: str, 'D65' (default) or 'D50'
+
+    Returns:
+        lab: Tensor of shape (B, 3, H, W)
+             L in [0, 100]
+             a in [-128, 127] approximately
+             b in [-128, 127] approximately
+    """
+    xyz = rgb_to_xyz(rgb)
+    lab = xyz_to_lab(xyz, illuminant=illuminant)
+    return lab
+
+
+def lab_to_xyz(lab, illuminant='D65'):
+    """Convert CIE LAB to CIE XYZ color space.
+
+    Args:
+        lab: Tensor of shape (B, 3, H, W)
+        illuminant: str, 'D65' or 'D50'
+
+    Returns:
+        xyz: Tensor of shape (B, 3, H, W)
+    """
+    # Reference white points
+    if illuminant == 'D65':
+        ref_white = torch.tensor([0.95047, 1.00000, 1.08883],
+                                 dtype=lab.dtype, device=lab.device)
+    elif illuminant == 'D50':
+        ref_white = torch.tensor([0.96422, 1.00000, 0.82521],
+                                 dtype=lab.dtype, device=lab.device)
+    else:
+        raise ValueError(f"Unknown illuminant: {illuminant}")
+
+    ref_white = ref_white.reshape(3, 1, 1)
+
+    L = lab[:, 0:1, :, :]
+    a = lab[:, 1:2, :, :]
+    b = lab[:, 2:3, :, :]
+
+    # Inverse Lab transform
+    fy = (L + 16) / 116
+    fx = a / 500 + fy
+    fz = fy - b / 200
+
+    # Stack for easier processing
+    f_xyz = torch.cat([fx, fy, fz], dim=1)
+
+    # Inverse piecewise function
+    delta = 6.0 / 29.0
+    mask = f_xyz > delta
+    xyz_normalized = torch.where(
+        mask,
+        torch.pow(f_xyz, 3.0),
+        3 * delta ** 2 * (f_xyz - 4.0 / 29.0)
+    )
+
+    # Denormalize by reference white
+    xyz = xyz_normalized * ref_white
+
+    return xyz
+
+
+def lab_to_rgb(lab, illuminant='D65'):
+    """Convert CIE LAB to sRGB color space (GPU-accelerated).
+
+    Args:
+        lab: Tensor of shape (B, 3, H, W)
+        illuminant: str, 'D65' (default) or 'D50'
+
+    Returns:
+        rgb: Tensor of shape (B, 3, H, W) with values in [0, 1]
+    """
+    xyz = lab_to_xyz(lab, illuminant=illuminant)
+
+    # XYZ to Linear RGB (inverse of rgb_to_xyz matrix)
+    M_inv = torch.tensor([
+        [ 3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660,  1.8760108,  0.0415560],
+        [ 0.0556434, -0.2040259,  1.0572252]
+    ], dtype=xyz.dtype, device=xyz.device)
+
+    B, C, H, W = xyz.shape
+    xyz_flat = xyz.permute(0, 2, 3, 1).reshape(-1, 3)
+    linear_rgb_flat = torch.matmul(xyz_flat, M_inv.T)
+    linear_rgb = linear_rgb_flat.reshape(B, H, W, 3).permute(0, 3, 1, 2)
+
+    # Linear RGB to sRGB (gamma correction)
+    srgb_mask = linear_rgb <= 0.0031308
+    rgb = torch.where(
+        srgb_mask,
+        12.92 * linear_rgb,
+        1.055 * torch.pow(linear_rgb.clamp(min=0), 1.0 / 2.4) - 0.055
+    )
+
+    return rgb.clamp(0, 1)

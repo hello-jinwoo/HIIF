@@ -82,6 +82,8 @@ def calc_delta_e_cie76(pred, gt):
     This is faster than CIEDE2000 but less perceptually accurate.
     Legacy industry standard, still widely used in simple applications.
 
+    Uses GPU-accelerated LAB conversion for significant speedup.
+
     Args:
         pred: torch.Tensor (B, 3, H, W), predicted images in [0, 1]
         gt: torch.Tensor (B, 3, H, W), ground truth images in [0, 1]
@@ -96,25 +98,20 @@ def calc_delta_e_cie76(pred, gt):
         - Poor: > 15.0 (large difference)
     """
     try:
-        from skimage import color
+        from models.color_utils import rgb_to_lab
     except ImportError:
-        raise ImportError("scikit-image not installed. Run: pip install scikit-image")
+        raise ImportError("color_utils not found. Check models/color_utils.py")
 
-    # Convert to numpy and transpose to (B, H, W, 3)
-    pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1)
-    gt_np = gt.cpu().numpy().transpose(0, 2, 3, 1)
+    # GPU-accelerated LAB conversion (batched)
+    pred_lab = rgb_to_lab(pred)  # (B, 3, H, W)
+    gt_lab = rgb_to_lab(gt)      # (B, 3, H, W)
 
-    delta_e_vals = []
-    for i in range(pred_np.shape[0]):
-        # Convert RGB to LAB
-        pred_lab = color.rgb2lab(pred_np[i])
-        gt_lab = color.rgb2lab(gt_np[i])
+    # Vectorized Euclidean distance in LAB space
+    # (B, 3, H, W) -> (B, H, W)
+    delta_e = torch.sqrt(torch.sum((pred_lab - gt_lab)**2, dim=1))
 
-        # Calculate Euclidean distance in LAB space
-        delta_e = np.sqrt(np.sum((pred_lab - gt_lab)**2, axis=-1))
-        delta_e_vals.append(np.mean(delta_e))
-
-    return np.mean(delta_e_vals)
+    # Mean across all dimensions
+    return delta_e.mean().item()
 
 
 # Backward compatibility alias
@@ -127,6 +124,8 @@ def calc_ciede2000(pred, gt):
     """
     Calculate CIEDE2000 (CIE Delta E 2000) perceptual color difference
     This is the proper perceptual metric with weighted lightness, chroma, and hue.
+
+    Uses GPU-accelerated LAB conversion for speedup.
 
     Args:
         pred: torch.Tensor (B, 3, H, W), predicted images in [0, 1]
@@ -142,25 +141,30 @@ def calc_ciede2000(pred, gt):
         - Poor: > 8.0 (large difference)
     """
     try:
-        from skimage.color import rgb2lab, deltaE_ciede2000
+        from skimage.color import deltaE_ciede2000
     except ImportError:
         raise ImportError("scikit-image not installed. Run: pip install scikit-image")
 
-    # Convert to numpy and transpose to (B, H, W, 3)
-    pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1)
-    gt_np = gt.cpu().numpy().transpose(0, 2, 3, 1)
+    try:
+        from models.color_utils import rgb_to_lab
+    except ImportError:
+        raise ImportError("color_utils not found. Check models/color_utils.py")
 
-    delta_e_vals = []
-    for i in range(pred_np.shape[0]):
-        # Convert RGB to LAB
-        pred_lab = rgb2lab(pred_np[i])
-        gt_lab = rgb2lab(gt_np[i])
+    # GPU-accelerated LAB conversion (batched)
+    pred_lab = rgb_to_lab(pred)  # (B, 3, H, W)
+    gt_lab = rgb_to_lab(gt)      # (B, 3, H, W)
 
-        # Calculate true CIEDE2000 perceptual distance
-        delta_e = deltaE_ciede2000(pred_lab, gt_lab)
-        delta_e_vals.append(np.mean(delta_e))
+    # Transfer to CPU for CIEDE2000 computation (scikit-image is CPU-only)
+    pred_lab_np = pred_lab.cpu().numpy().transpose(0, 2, 3, 1)  # (B, H, W, 3)
+    gt_lab_np = gt_lab.cpu().numpy().transpose(0, 2, 3, 1)      # (B, H, W, 3)
 
-    return np.mean(delta_e_vals)
+    # Vectorized CIEDE2000 calculation across entire batch
+    # Note: deltaE_ciede2000 operates on (H, W, 3) arrays, compute per image
+    delta_e_list = [deltaE_ciede2000(pred_lab_np[i], gt_lab_np[i]) for i in range(pred_lab_np.shape[0])]
+    delta_e = np.stack(delta_e_list, axis=0)  # (B, H, W)
+
+    # Mean across all dimensions
+    return np.mean(delta_e)
 
 
 def calc_delta_e_oklab(pred, gt):
@@ -235,23 +239,31 @@ def calc_delta_e_cam16_ucs(pred, gt):
     pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1)
     gt_np = gt.cpu().numpy().transpose(0, 2, 3, 1)
 
-    delta_e_vals = []
-    for i in range(pred_np.shape[0]):
-        # Convert sRGB to XYZ
-        # colour library expects input in [0, 1] range
-        pred_xyz = sRGB_to_XYZ(pred_np[i])
-        gt_xyz = sRGB_to_XYZ(gt_np[i])
+    # Vectorized batch processing: convert all images to XYZ then CAM16-UCS
+    # Use list comprehension (faster than Python loop) then stack
+    pred_xyz_list = [sRGB_to_XYZ(pred_np[i]) for i in range(pred_np.shape[0])]
+    gt_xyz_list = [sRGB_to_XYZ(gt_np[i]) for i in range(gt_np.shape[0])]
 
-        # Convert XYZ to CAM16-UCS
-        # Using default viewing conditions (D65 illuminant)
-        pred_cam16 = XYZ_to_CAM16UCS(pred_xyz)
-        gt_cam16 = XYZ_to_CAM16UCS(gt_xyz)
+    # Stack to (B, H, W, 3) arrays
+    pred_xyz = np.stack(pred_xyz_list, axis=0)
+    gt_xyz = np.stack(gt_xyz_list, axis=0)
 
-        # Calculate Euclidean distance in CAM16-UCS space
-        delta_e = np.sqrt(np.sum((pred_cam16 - gt_cam16)**2, axis=-1))
-        delta_e_vals.append(np.mean(delta_e))
+    # Convert XYZ to CAM16-UCS (using default viewing conditions)
+    pred_cam16_list = [XYZ_to_CAM16UCS(pred_xyz[i]) for i in range(pred_xyz.shape[0])]
+    gt_cam16_list = [XYZ_to_CAM16UCS(gt_xyz[i]) for i in range(gt_xyz.shape[0])]
 
-    return np.mean(delta_e_vals)
+    # Stack to (B, H, W, 3) arrays
+    pred_cam16 = np.stack(pred_cam16_list, axis=0)
+    gt_cam16 = np.stack(gt_cam16_list, axis=0)
+
+    # Vectorized distance calculation across entire batch
+    # (B, H, W, 3) -> (B, H, W)
+    delta_e = np.sqrt(np.sum((pred_cam16 - gt_cam16)**2, axis=-1))
+
+    # Mean across spatial dimensions for each image, then mean across batch
+    delta_e_per_image = np.mean(delta_e, axis=(1, 2))
+
+    return np.mean(delta_e_per_image)
 
 
 

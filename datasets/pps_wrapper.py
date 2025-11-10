@@ -30,7 +30,8 @@ class PPSColorAugmentedWrapper(Dataset):
 
     def __init__(self, dataset: Dataset, resize_range: List[int] = [256, 1024],
                  crop_size: int = 128, augment: bool = True,
-                 augment_params: Optional[Dict] = None):
+                 augment_params: Optional[Dict] = None,
+                 patches_per_image: int = 1):
         """
         Args:
             dataset: Base dataset (PPSPreferencePairDataset)
@@ -42,12 +43,16 @@ class PPSColorAugmentedWrapper(Dataset):
                 - sat_scale: [float, float], saturation scale range (default: [0.8, 1.2])
                 - val_scale: [float, float], value scale range (default: [0.9, 1.1])
                 - noise_std: float, Gaussian noise std (default: 0.02)
+            patches_per_image: int, number of patches to extract per image (default: 1)
+                - When > 1, extracts multiple random crops from the same image
+                - More efficient data loading (fewer image I/O operations)
         """
         super().__init__()
         self.dataset = dataset
         self.resize_range = resize_range
         self.crop_size = crop_size
         self.augment = augment
+        self.patches_per_image = patches_per_image
 
         # Default augmentation parameters
         if augment_params is None:
@@ -192,15 +197,21 @@ class PPSColorAugmentedWrapper(Dataset):
         Each input is evaluated against BOTH ground truths during training:
         L_total = w_p * L1(pred, gt_prefer) + (1-w_p) * L1(pred, gt_non_prefer)
 
+        When patches_per_image > 1, extracts multiple random crops from the same image.
+
         Returns:
             dict with keys:
-                - 'user_id': str
-                - 'image_id': str
-                - 'inp': torch.Tensor (4, 3, crop_size, crop_size) - 4 input versions
-                - 'gt_prefer': torch.Tensor (3, crop_size, crop_size) - prefer ground truth
-                - 'gt_non_prefer': torch.Tensor (3, crop_size, crop_size) - non-prefer ground truth
-                - 'coord': torch.Tensor (crop_size, crop_size, 2) - normalized coordinates
-                - 'cell': torch.Tensor (2,) - pixel size in normalized space
+                - 'user_id': str or list[str]
+                - 'image_id': str or list[str]
+                - 'inp': torch.Tensor
+                    - If patches_per_image=1: (4, 3, crop_size, crop_size)
+                    - If patches_per_image>1: (N, 4, 3, crop_size, crop_size)
+                - 'gt_prefer': torch.Tensor
+                    - If patches_per_image=1: (3, crop_size, crop_size)
+                    - If patches_per_image>1: (N, 3, crop_size, crop_size)
+                - 'gt_non_prefer': torch.Tensor (same shape as gt_prefer)
+                - 'coord': torch.Tensor (crop_size, crop_size, 2) or (N, crop_size, crop_size, 2)
+                - 'cell': torch.Tensor (2,) or (N, 2)
         """
         # Get base sample
         sample = self.dataset[idx]
@@ -212,56 +223,190 @@ class PPSColorAugmentedWrapper(Dataset):
         prefer_img = self._resize_image(prefer_img, target_size)
         non_prefer_img = self._resize_image(non_prefer_img, target_size)
 
-        # Random crop (same position for both images)
-        prefer_crop, non_prefer_crop = self._random_crop_pair(
-            prefer_img, non_prefer_img, self.crop_size
-        )
+        # Extract multiple patches if requested
+        if self.patches_per_image > 1:
+            all_inp = []
+            all_gt_prefer = []
+            all_gt_non_prefer = []
 
-        # Create 4 input versions
-        versions = []
+            for _ in range(self.patches_per_image):
+                # Random crop (independent position for each patch)
+                prefer_crop, non_prefer_crop = self._random_crop_pair(
+                    prefer_img, non_prefer_img, self.crop_size
+                )
 
-        # 1. Prefer original
-        versions.append(prefer_crop)
+                # Create 4 input versions with independent augmentation
+                versions = []
 
-        # 2. Prefer augmented
-        if self.augment:
-            prefer_aug = self._apply_color_augmentation(prefer_crop)
+                # 1. Prefer original
+                versions.append(prefer_crop)
+
+                # 2. Prefer augmented
+                if self.augment:
+                    prefer_aug = self._apply_color_augmentation(prefer_crop)
+                else:
+                    prefer_aug = prefer_crop
+                versions.append(prefer_aug)
+
+                # 3. Non-prefer original
+                versions.append(non_prefer_crop)
+
+                # 4. Non-prefer augmented
+                if self.augment:
+                    non_prefer_aug = self._apply_color_augmentation(non_prefer_crop)
+                else:
+                    non_prefer_aug = non_prefer_crop
+                versions.append(non_prefer_aug)
+
+                # Stack input versions
+                inp_batch = torch.stack(versions, dim=0)  # (4, 3, crop_size, crop_size)
+
+                all_inp.append(inp_batch)
+                all_gt_prefer.append(prefer_crop)
+                all_gt_non_prefer.append(non_prefer_crop)
+
+            # Stack all patches
+            inp_batch = torch.stack(all_inp, dim=0)  # (N, 4, 3, crop_size, crop_size)
+            gt_prefer = torch.stack(all_gt_prefer, dim=0)  # (N, 3, crop_size, crop_size)
+            gt_non_prefer = torch.stack(all_gt_non_prefer, dim=0)  # (N, 3, crop_size, crop_size)
+
+            # Coordinates and cell (same for all patches)
+            coord = make_coord([self.crop_size, self.crop_size], flatten=False)
+            coord = coord.unsqueeze(0).expand(self.patches_per_image, -1, -1, -1)  # (N, H, W, 2)
+            cell = torch.tensor([2 / self.crop_size, 2 / self.crop_size], dtype=torch.float32)
+            cell = cell.unsqueeze(0).expand(self.patches_per_image, -1)  # (N, 2)
+
+            # Metadata (repeat for each patch)
+            user_ids = [sample['user_id']] * self.patches_per_image
+            image_ids = [sample['image_id']] * self.patches_per_image
+
+            return {
+                'user_id': user_ids,
+                'image_id': image_ids,
+                'inp': inp_batch,
+                'gt_prefer': gt_prefer,
+                'gt_non_prefer': gt_non_prefer,
+                'coord': coord,
+                'cell': cell,
+            }
+
         else:
-            prefer_aug = prefer_crop
-        versions.append(prefer_aug)
+            # Original behavior (single crop)
+            prefer_crop, non_prefer_crop = self._random_crop_pair(
+                prefer_img, non_prefer_img, self.crop_size
+            )
 
-        # 3. Non-prefer original
-        versions.append(non_prefer_crop)
+            # Create 4 input versions
+            versions = []
 
-        # 4. Non-prefer augmented
-        if self.augment:
-            non_prefer_aug = self._apply_color_augmentation(non_prefer_crop)
-        else:
-            non_prefer_aug = non_prefer_crop
-        versions.append(non_prefer_aug)
+            # 1. Prefer original
+            versions.append(prefer_crop)
 
-        # Stack input versions
-        inp_batch = torch.stack(versions, dim=0)  # (4, 3, crop_size, crop_size)
+            # 2. Prefer augmented
+            if self.augment:
+                prefer_aug = self._apply_color_augmentation(prefer_crop)
+            else:
+                prefer_aug = prefer_crop
+            versions.append(prefer_aug)
 
-        # Ground truths: Only 2 unique GTs (prefer and non-prefer)
-        # Each input will compute loss against BOTH GTs
-        # L_total = w_p * L1(pred, gt_prefer) + (1-w_p) * L1(pred, gt_non_prefer)
-        gt_prefer = prefer_crop      # (3, H, W)
-        gt_non_prefer = non_prefer_crop  # (3, H, W)
+            # 3. Non-prefer original
+            versions.append(non_prefer_crop)
 
-        # Generate coordinates (same resolution - no upsampling)
-        coord = make_coord([self.crop_size, self.crop_size], flatten=False)
-        # coord: (crop_size, crop_size, 2), values in [-1, 1]
+            # 4. Non-prefer augmented
+            if self.augment:
+                non_prefer_aug = self._apply_color_augmentation(non_prefer_crop)
+            else:
+                non_prefer_aug = non_prefer_crop
+            versions.append(non_prefer_aug)
 
-        # Cell size (pixel size in normalized space)
-        cell = torch.tensor([2 / self.crop_size, 2 / self.crop_size], dtype=torch.float32)
+            # Stack input versions
+            inp_batch = torch.stack(versions, dim=0)  # (4, 3, crop_size, crop_size)
 
+            # Ground truths
+            gt_prefer = prefer_crop
+            gt_non_prefer = non_prefer_crop
+
+            # Generate coordinates (same resolution - no upsampling)
+            coord = make_coord([self.crop_size, self.crop_size], flatten=False)
+            cell = torch.tensor([2 / self.crop_size, 2 / self.crop_size], dtype=torch.float32)
+
+            return {
+                'user_id': sample['user_id'],
+                'image_id': sample['image_id'],
+                'inp': inp_batch,
+                'gt_prefer': gt_prefer,
+                'gt_non_prefer': gt_non_prefer,
+                'coord': coord,
+                'cell': cell,
+            }
+
+
+def pps_multi_crop_collate_fn(batch):
+    """
+    Custom collate function for multi-crop batching.
+
+    Handles both single-crop (patches_per_image=1) and multi-crop (patches_per_image>1) cases.
+
+    Args:
+        batch: list of dict, each dict is a sample returned by PPSColorAugmentedWrapper
+
+    Returns:
+        dict with batched tensors
+
+    Shape transformation for multi-crop:
+        Input:  batch_image items, each with shape (N, 4, 3, H, W)
+        Output: single batch with shape (batch_size, 4, 3, H, W)
+                where batch_size = batch_image × N
+    """
+    # Check if multi-crop (first item has list of user_ids)
+    is_multi_crop = isinstance(batch[0]['user_id'], list)
+
+    if is_multi_crop:
+        # Flatten multi-crop batches
+        # Each item has shape (N, ...), stack and flatten to (batch_image*N, ...)
+        all_user_ids = []
+        all_image_ids = []
+        all_inp = []
+        all_gt_prefer = []
+        all_gt_non_prefer = []
+        all_coord = []
+        all_cell = []
+
+        for item in batch:
+            # item['user_id'] is a list of N user_ids
+            # item['inp'] has shape (N, 4, 3, H, W)
+            patches_per_image = len(item['user_id'])
+
+            all_user_ids.extend(item['user_id'])
+            all_image_ids.extend(item['image_id'])
+
+            # Flatten first dimension (N) into the batch
+            for i in range(patches_per_image):
+                all_inp.append(item['inp'][i])
+                all_gt_prefer.append(item['gt_prefer'][i])
+                all_gt_non_prefer.append(item['gt_non_prefer'][i])
+                all_coord.append(item['coord'][i])
+                all_cell.append(item['cell'][i])
+
+        # Stack all patches
         return {
-            'user_id': sample['user_id'],
-            'image_id': sample['image_id'],
-            'inp': inp_batch,           # (4, 3, H, W)
-            'gt_prefer': gt_prefer,     # (3, H, W)
-            'gt_non_prefer': gt_non_prefer,  # (3, H, W)
-            'coord': coord,             # (H, W, 2)
-            'cell': cell,               # (2,)
+            'user_id': all_user_ids,
+            'image_id': all_image_ids,
+            'inp': torch.stack(all_inp, dim=0),
+            'gt_prefer': torch.stack(all_gt_prefer, dim=0),
+            'gt_non_prefer': torch.stack(all_gt_non_prefer, dim=0),
+            'coord': torch.stack(all_coord, dim=0),
+            'cell': torch.stack(all_cell, dim=0),
+        }
+    else:
+        # Single-crop: use default PyTorch collate behavior
+        # Stack each field
+        return {
+            'user_id': [item['user_id'] for item in batch],
+            'image_id': [item['image_id'] for item in batch],
+            'inp': torch.stack([item['inp'] for item in batch], dim=0),
+            'gt_prefer': torch.stack([item['gt_prefer'] for item in batch], dim=0),
+            'gt_non_prefer': torch.stack([item['gt_non_prefer'] for item in batch], dim=0),
+            'coord': torch.stack([item['coord'] for item in batch], dim=0),
+            'cell': torch.stack([item['cell'] for item in batch], dim=0),
         }

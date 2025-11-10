@@ -1,0 +1,193 @@
+# =============================================================================
+# Unified PPS Configuration with EDSR Encoder
+# =============================================================================
+# This config file is used by BOTH train_pps.py and validate_pps.py
+#
+# Structure:
+# - Shared Configuration: Used by both training and validation
+# - Training Configuration: Used only by train_pps.py
+# - Validation Configuration: Used only by validate_pps.py
+#
+# Usage:
+#   python train_pps.py --config configs/pps/pps_edsr.yaml
+#   python validate_pps.py --config configs/pps/pps_edsr.yaml
+# =============================================================================
+
+# =============================================================================
+# Shared Configuration (used by both train and validate)
+# =============================================================================
+
+model:
+  name: hiif-pps
+  args:
+    encoder_spec:
+      name: edsr-baseline
+      args:
+        no_upsampling: true
+        n_resblocks: 16
+        n_feats: 64
+    hidden_dim: 128
+    blocks: 16
+    # user_ids will be auto-detected from dataset
+
+val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/validation
+      cache: none
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 64
+      augment: false
+  batch_size: 64
+
+data_norm:
+  inp: {sub: [0.5], div: [0.5]}
+  gt: {sub: [0.5], div: [0.5]}
+
+# =============================================================================
+# Training Configuration (used by train_pps.py only)
+# =============================================================================
+
+train_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/train
+      cache: none
+      # Auto-loads all users from response_dir
+  wrapper:
+    name: pps-color-augmented
+    args:
+      crop_size: 64  # Standard crop for EDSR
+      augment: true
+      augment_params:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+  batch_size: 64  # 2 samples × 4 inputs = 8 images
+  sampler:
+    iterations_per_user: 512  # 16 iterations per user before switching
+
+optimizer:
+  name: adam
+  args:
+    lr: 1.e-4  # Standard learning rate for EDSR
+    betas: [0.9, 0.999]
+
+epoch_max: 500  # Full training: 200 epochs
+epoch_val: 10   # Validate every 20 epochs
+epoch_save: 10  # Save checkpoint every 20 epochs
+
+loss_schedule:
+  schedule_type: logarithmic
+  w_p_start: 0.5
+  w_p_end: 1.5
+  # total_iterations auto-computed as: epoch_max × batches_per_epoch
+
+# =============================================================================
+# Validation Configuration (used by validate_pps.py only)
+# =============================================================================
+
+# Encoder checkpoint from training
+encoder_checkpoint: ./save/train_hiif_pps_edsr_rgb_rgb_e50_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
+
+# Decoder training configuration (few-shot learning)
+decoder_training:
+  sample_selection_seed: 42
+
+  # Number of samples per user for training decoder
+  samples_per_user: 64
+
+  # Number of samples per user for evaluation (randomly selected from remaining)
+  eval_samples_per_user: 8
+
+  # Batch size for decoder training (cropped patches)
+  batch_size: 64  # 2 samples × 4 inputs = 8 images
+
+  # Batch size for evaluation (full-resolution images)
+  # Higher values use more GPU memory but faster evaluation
+  # Recommended: 1 for large images (>1024x1024), 2-4 for smaller images
+  eval_batch_size: 1
+
+  # DataLoader worker processes for parallel data loading (training)
+  # Higher values improve GPU utilization but use more CPU/RAM
+  # Recommended: 4-8 for most systems, 0 for debugging
+  num_workers: 8
+
+  # DataLoader worker processes for evaluation (full-resolution)
+  # Set to 0 to avoid CPU contention during metrics computation
+  # Can increase (2-4) if CPU has idle cores, but usually not necessary
+  eval_num_workers: 0
+
+  # Optimizer
+  optimizer:
+    name: adam
+    args:
+      lr: 2.e-4  # Same as main training
+      betas: [0.9, 0.999]
+
+  # Loss weight scheduling
+  loss_schedule:
+    schedule_type: logarithmic
+    w_p_start: 0.5
+    w_p_end: 1.2
+
+  # Evaluation checkpoints (iterations)
+  eval_checkpoints: [100, 200]
+
+  # Maximum iterations for decoder training
+  max_iterations: 200
+
+  # Patch-based evaluation settings
+  patch_size: 64
+  stride: 32
+
+# Augmentation configurations
+augmentation:
+  # Training augmentation (used when training decoder with crop)
+  train_aug:
+    crop_size: 64
+    augment: true
+    augment_params:
+      brightness: 0.1
+      contrast: 0.1
+      saturation: 0.1
+      hue: 0.05
+
+  # Evaluation augmentation (full-resolution, no crop)
+  # Tests robustness: augmented input vs clean GT
+  aug:
+    augment: true
+    augment_params:
+      brightness: 0.2  # Stronger than training
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+
+  # Clean (no augmentation, full-resolution)
+  clean:
+    augment: false
+
+# Validation scope
+num_val_users: null  # null = all users, or specify number (e.g., 2 for testing)
+
+# Metrics to compute
+metrics:
+  - psnr              # Peak Signal-to-Noise Ratio
+  - ssim              # Structural Similarity Index
+  - lpips             # Learned Perceptual Image Patch Similarity
+  - delta_e_cie76     # CIE 1976 Delta E
+  - delta_e_oklab     # OKLab Delta E
+  - ciede2000         # CIE Delta E 2000
+  - delta_e_cam16     # CAM16-UCS Delta E
+  - niqe              # Natural Image Quality Evaluator
+
+# Results
+save_images: true
+save_interval: null

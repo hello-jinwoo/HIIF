@@ -107,8 +107,23 @@ decoder_training:
   # Number of samples per user for evaluation (randomly selected from remaining)
   eval_samples_per_user: 8
 
-  # Batch size for decoder training
+  # Batch size for decoder training (cropped patches)
   batch_size: 16  # 2 samples × 4 inputs = 8 images
+
+  # Batch size for evaluation (full-resolution images)
+  # Higher values use more GPU memory but faster evaluation
+  # Recommended: 1 for large images (>1024x1024), 2-4 for smaller images
+  eval_batch_size: 1
+
+  # DataLoader worker processes for parallel data loading (training)
+  # Higher values improve GPU utilization but use more CPU/RAM
+  # Recommended: 4-8 for most systems, 0 for debugging
+  num_workers: 8
+
+  # DataLoader worker processes for evaluation (full-resolution)
+  # Set to 0 to avoid CPU contention during metrics computation
+  # Can increase (2-4) if CPU has idle cores, but usually not necessary
+  eval_num_workers: 0
 
   # Optimizer
   optimizer:

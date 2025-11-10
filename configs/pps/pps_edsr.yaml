@@ -35,12 +35,12 @@ val_dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/validation_small
+      response_dir: ./load/PPS/responses/validation
       cache: none
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 128
+      crop_size: 64
       augment: false
   batch_size: 16
 
@@ -63,7 +63,7 @@ train_dataset:
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 128  # Standard crop for EDSR
+      crop_size: 64  # Standard crop for EDSR
       augment: true
       augment_params:
         brightness: 0.1
@@ -80,14 +80,14 @@ optimizer:
     lr: 1.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 50  # Full training: 200 epochs
+epoch_max: 200  # Full training: 200 epochs
 epoch_val: 10   # Validate every 20 epochs
 epoch_save: 10  # Save checkpoint every 20 epochs
 
 loss_schedule:
   schedule_type: logarithmic
   w_p_start: 0.5
-  w_p_end: 1.2
+  w_p_end: 1.5
   # total_iterations auto-computed as: epoch_max × batches_per_epoch
 
 # =============================================================================
@@ -95,7 +95,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_edsr_rgb_rgb_e100_lr1e-4_lin_0.5_1.2/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_edsr_patch64_rgb_rgb_e200_lr1e-4_log_0.5_1.5/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -107,8 +107,23 @@ decoder_training:
   # Number of samples per user for evaluation (randomly selected from remaining)
   eval_samples_per_user: 8
 
-  # Batch size for decoder training
+  # Batch size for decoder training (cropped patches)
   batch_size: 16  # 2 samples × 4 inputs = 8 images
+
+  # Batch size for evaluation (full-resolution images)
+  # Higher values use more GPU memory but faster evaluation
+  # Recommended: 1 for large images (>1024x1024), 2-4 for smaller images
+  eval_batch_size: 1
+
+  # DataLoader worker processes for parallel data loading (training)
+  # Higher values improve GPU utilization but use more CPU/RAM
+  # Recommended: 4-8 for most systems, 0 for debugging
+  num_workers: 8
+
+  # DataLoader worker processes for evaluation (full-resolution)
+  # Set to 0 to avoid CPU contention during metrics computation
+  # Can increase (2-4) if CPU has idle cores, but usually not necessary
+  eval_num_workers: 0
 
   # Optimizer
   optimizer:
@@ -121,17 +136,17 @@ decoder_training:
   loss_schedule:
     schedule_type: logarithmic
     w_p_start: 0.5
-    w_p_end: 1.2
+    w_p_end: 1.5
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [500, 1000]
+  eval_checkpoints: [250, 500]
 
   # Maximum iterations for decoder training
-  max_iterations: 1000
+  max_iterations: 500
 
   # Patch-based evaluation settings
-  patch_size: 128
-  stride: 64
+  patch_size: 64
+  stride: 32
 
 # Augmentation configurations
 augmentation:
