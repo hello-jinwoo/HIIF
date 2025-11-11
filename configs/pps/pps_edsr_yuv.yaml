@@ -1,16 +1,16 @@
 # =============================================================================
-# Unified PPS Configuration with EDSR Encoder
+# Unified PPS Configuration with EDSR Encoder and YUV Color Space
 # =============================================================================
-# This config file is used by BOTH train_pps.py and validate_pps.py
+# This config demonstrates YUV (BT.709) input/output support
 #
-# Structure:
-# - Shared Configuration: Used by both training and validation
-# - Training Configuration: Used only by train_pps.py
-# - Validation Configuration: Used only by validate_pps.py
+# Key Features:
+# - input_type: 'yuv' - Converts RGB input to YUV before processing
+# - output_type: 'yuv_residual' - Predicts YUV residual (YUV_input + residual = YUV_GT)
+# - BT.709 standard used (modern HD content)
 #
 # Usage:
-#   python train_pps.py --config configs/pps/pps_edsr.yaml
-#   python validate_pps.py --config configs/pps/pps_edsr.yaml
+#   python train_pps.py --config configs/pps/pps_edsr_yuv.yaml
+#   python validate_pps.py --config configs/pps/pps_edsr_yuv.yaml
 # =============================================================================
 
 # =============================================================================
@@ -29,8 +29,10 @@ model:
     hidden_dim: 256
     blocks: 16
     # user_ids will be auto-detected from dataset
-    input_type: 'all'
-    output_type: 'rgb_residual'
+
+    # YUV color space configuration
+    input_type: 'yuv'           # Convert RGB → YUV (BT.709) before encoding
+    output_type: 'yuv_residual' # Predict YUV residual (YUV_input + residual = YUV_GT)
 
 # Evaluation dataset (fixed 16 samples per user for testing)
 eval_dataset:
@@ -92,7 +94,7 @@ optimizer:
     lr: 1.e-4  # Standard learning rate for EDSR
     betas: [0.9, 0.999]
 
-epoch_max: 100  # Full training: 200 epochs
+epoch_max: 100  # Training epochs
 epoch_val: 20   # Validate every 20 epochs
 epoch_save: 20  # Save checkpoint every 20 epochs
 
@@ -107,7 +109,7 @@ loss_schedule:
 # =============================================================================
 
 # Encoder checkpoint from training
-encoder_checkpoint: ./save/train_hiif_pps_small_edsr_all_rgb_e100_lr1e-4_lin_0.5_0.9/encoder/epoch-last.pth
+encoder_checkpoint: ./save/train_hiif_pps_edsr_yuv_e100_lr1e-4_lin_0.5_0.9/encoder/epoch-last.pth
 
 # Decoder training configuration (few-shot learning)
 decoder_training:
@@ -164,7 +166,7 @@ decoder_training:
 augmentation:
   # Training augmentation (used when training decoder with crop)
   train_aug:
-    crop_size: 64
+    crop_size: 128
     augment: true
     augment_params:
       brightness: 0.1

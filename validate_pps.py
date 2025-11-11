@@ -260,7 +260,7 @@ def validate_config(config):
         ValueError: If required keys are missing or values are invalid
     """
     # Check required top-level keys
-    required_keys = ['model', 'val_dataset', 'decoder_training', 'augmentation']
+    required_keys = ['model', 'eval_dataset', 'train_val_dataset', 'decoder_training', 'augmentation']
     for key in required_keys:
         if key not in config:
             raise ValueError(f"Missing required config key: '{key}'")
@@ -317,11 +317,32 @@ def main(config_, save_path_):
     with open(os.path.join(save_path, 'config.yaml'), 'w') as f:
         yaml.dump(config, f, sort_keys=False)
 
-    # Load validation dataset
-    log("\nLoading validation dataset...")
-    base_dataset = datasets.make(config['val_dataset']['dataset'])
+    # Load TWO datasets: evaluation (fixed 16 samples) and training/validation
+    log("\nLoading datasets...")
 
-    user_ids = base_dataset.get_user_ids()
+    # Evaluation dataset (fixed samples for testing)
+    log("Loading evaluation dataset...")
+    eval_dataset = datasets.make(config['eval_dataset']['dataset'])
+    log(f"Evaluation dataset loaded: {len(eval_dataset)} total samples")
+
+    # Training/validation dataset (for decoder training, will exclude eval samples)
+    log("Loading training/validation dataset...")
+    train_val_dataset = datasets.make(config['train_val_dataset']['dataset'])
+    log(f"Training/validation dataset loaded: {len(train_val_dataset)} total samples")
+
+    # Verify both datasets have the same users
+    eval_user_ids = eval_dataset.get_user_ids()
+    train_val_user_ids = train_val_dataset.get_user_ids()
+
+    if set(eval_user_ids) != set(train_val_user_ids):
+        log(f"WARNING: User mismatch between eval and train_val datasets!")
+        log(f"  Eval users: {sorted(eval_user_ids)}")
+        log(f"  Train/val users: {sorted(train_val_user_ids)}")
+        user_ids = sorted(set(eval_user_ids) & set(train_val_user_ids))
+        log(f"  Using intersection: {user_ids}")
+    else:
+        user_ids = sorted(eval_user_ids)
+
     log(f"Total validation users: {len(user_ids)}")
     log(f"User IDs: {user_ids}")
 
@@ -387,12 +408,18 @@ def main(config_, save_path_):
     }
 
     for user_id in user_ids:
-        user_samples = base_dataset.get_user_samples(user_id)
+        # Get samples from both datasets
+        eval_samples = eval_dataset.get_user_samples(user_id)
+        train_val_samples = train_val_dataset.get_user_samples(user_id)
+
+        log(f"\nUser {user_id}: {len(eval_samples)} eval samples (fixed), {len(train_val_samples)} train/val samples (before exclusion)")
 
         user_results = validate_user(
             user_id=user_id,
-            user_samples=user_samples,
-            base_dataset=base_dataset,
+            eval_samples=eval_samples,
+            eval_dataset=eval_dataset,
+            train_val_samples=train_val_samples,
+            train_val_dataset=train_val_dataset,
             model=model,
             config=config,
             metrics_calc=metrics_calc,

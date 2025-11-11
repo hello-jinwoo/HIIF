@@ -30,17 +30,27 @@ model:
     blocks: 8
     # user_ids will be auto-detected from dataset
 
-val_dataset:
+# Evaluation dataset (fixed 16 samples per user for testing)
+eval_dataset:
   dataset:
     name: pps-preference-pair
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/validation
+      response_dir: ./load/PPS/responses/evaluation
+      cache: none
+
+# Training/validation dataset (for decoder training, excludes eval samples)
+train_val_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/context1_n16
       cache: none
   wrapper:
     name: pps-color-augmented
     args:
-      crop_size: 64
+      crop_size: 128
       augment: false
   batch_size: 128
 
@@ -149,14 +159,14 @@ decoder_training:
     w_p_end: 2.0
 
   # Evaluation checkpoints (iterations)
-  eval_checkpoints: [1000, 2000]
+  eval_checkpoints: [500, 1000]
 
   # Maximum iterations for decoder training
-  max_iterations: 2000
+  max_iterations: 1000
 
   # Patch-based evaluation settings
-  patch_size: 64
-  stride: 32
+  patch_size: 128
+  stride: 64
 
   # Maximum patches per forward pass (increased for better GPU utilization)
   # With 64×64 patches, GPU can handle 64-128 patches easily
@@ -200,7 +210,7 @@ metrics:
   - lpips             # Learned Perceptual Image Patch Similarity (moderate, GPU)
   - delta_e_cie76     # CIE 1976 Delta E (fast, GPU-accelerated LAB)
   - delta_e_oklab     # OKLab Delta E (fast, GPU-accelerated)
-  # - ciede2000       # CIE Delta E 2000 (SLOW: ~760ms/call, CPU-bound)
+  - ciede2000       # CIE Delta E 2000 (SLOW: ~760ms/call, CPU-bound)
   # - delta_e_cam16   # CAM16-UCS Delta E (VERY SLOW: ~2280ms/call, CPU-bound)
   # - niqe            # Natural Image Quality Evaluator (not implemented)
 

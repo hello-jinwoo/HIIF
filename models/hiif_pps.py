@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import models
 from models import register
 from models.hiif import MLP_with_shortcut, qkv_attn, compute_hi_coord
-from models.color_utils import rgb_to_hsv, hsv_to_rgb, rgb_to_oklab, oklab_to_rgb
+from models.color_utils import rgb_to_hsv, hsv_to_rgb, rgb_to_oklab, oklab_to_rgb, rgb_to_yuv, yuv_to_rgb
 from utils import make_coord
 
 
@@ -36,15 +36,15 @@ class HIIF_PPS(nn.Module):
             hidden_dim: Hidden dimension for decoders
             blocks: Number of attention blocks
             user_ids: List of available user IDs (for reference, not created in memory)
-            input_type: Input color space ('rgb', 'hsv', 'oklab', 'all')
+            input_type: Input color space ('rgb', 'hsv', 'oklab', 'yuv', 'all')
             output_type: Output type ('rgb_residual', 'hsv_residual',
-                        'oklab_residual', 'affine_coef')
+                        'oklab_residual', 'yuv_residual', 'affine_coef')
         """
         super().__init__()
 
         # Validate input_type and output_type
-        valid_inputs = ['rgb', 'hsv', 'oklab', 'all']
-        valid_outputs = ['rgb_residual', 'hsv_residual', 'oklab_residual', 'affine_coef']
+        valid_inputs = ['rgb', 'hsv', 'oklab', 'yuv', 'all']
+        valid_outputs = ['rgb_residual', 'hsv_residual', 'oklab_residual', 'yuv_residual', 'affine_coef']
 
         if input_type not in valid_inputs:
             raise ValueError(f"Invalid input_type: {input_type}. Must be one of {valid_inputs}")
@@ -84,7 +84,7 @@ class HIIF_PPS(nn.Module):
     def _get_input_channels(self):
         """Get number of input channels based on input_type."""
         if self.input_type == 'all':
-            return 9  # RGB + HSV + OKLab
+            return 12  # RGB + HSV + OKLab + YUV
         else:
             return 3
 
@@ -110,10 +110,13 @@ class HIIF_PPS(nn.Module):
             return rgb_to_hsv(inp)
         elif self.input_type == 'oklab':
             return rgb_to_oklab(inp)
+        elif self.input_type == 'yuv':
+            return rgb_to_yuv(inp)
         elif self.input_type == 'all':
             hsv = rgb_to_hsv(inp)
             oklab = rgb_to_oklab(inp)
-            return torch.cat([inp, hsv, oklab], dim=1)  # (B, 9, H, W)
+            yuv = rgb_to_yuv(inp)
+            return torch.cat([inp, hsv, oklab, yuv], dim=1)  # (B, 12, H, W)
         else:
             raise ValueError(f"Unknown input_type: {self.input_type}")
 
@@ -267,6 +270,14 @@ class HIIF_PPS(nn.Module):
             base_oklab = rgb_to_oklab(base)
             output_oklab = base_oklab + output
             return oklab_to_rgb(output_oklab)
+
+        elif self.output_type == 'yuv_residual':
+            # YUV residual: inp_rgb → YUV → + residual → RGB
+            base = F.grid_sample(self.inp, coord.flip(-1), mode='bilinear',
+                               padding_mode='border', align_corners=False)
+            base_yuv = rgb_to_yuv(base)
+            output_yuv = base_yuv + output
+            return yuv_to_rgb(output_yuv)
 
         elif self.output_type == 'affine_coef':
             # Affine transform: A * rgb + d

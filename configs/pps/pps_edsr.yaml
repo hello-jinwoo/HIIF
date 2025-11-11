@@ -30,7 +30,17 @@ model:
     blocks: 16
     # user_ids will be auto-detected from dataset
 
-val_dataset:
+# Evaluation dataset (fixed 16 samples per user for testing)
+eval_dataset:
+  dataset:
+    name: pps-preference-pair
+    args:
+      root_path: ./load/PPS/images
+      response_dir: ./load/PPS/responses/evaluation
+      cache: none
+
+# Training/validation dataset (for decoder training, excludes eval samples)
+train_val_dataset:
   dataset:
     name: pps-preference-pair
     args:

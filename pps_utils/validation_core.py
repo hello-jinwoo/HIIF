@@ -692,23 +692,28 @@ def evaluate_decoder(model, eval_loader: DataLoader, metrics_calc,
     return aggregated
 
 
-def validate_user(user_id: str, user_samples: List[int], base_dataset,
+def validate_user(user_id: str,
+                 eval_samples: List[int], eval_dataset,
+                 train_val_samples: List[int], train_val_dataset,
                  model, config: Dict, metrics_calc, save_dir: str,
                  log_fn: Callable) -> Dict:
     """
     Validate one user with few-shot learning (test-time training).
 
     Process:
-    1. Sample N training samples for decoder training
-    2. Train decoder from scratch for max_iterations
-    3. Evaluate at specified checkpoints (e.g., [100, 500])
-    4. Test with multiple augmentation types (clean, different_aug)
-    5. Compute all metrics on full-resolution outputs
+    1. Use fixed evaluation samples from evaluation dataset
+    2. Sample N training samples from train_val dataset (excluding eval image_ids)
+    3. Train decoder from scratch for max_iterations
+    4. Evaluate at specified checkpoints (e.g., [100, 500])
+    5. Test with multiple augmentation types (clean, different_aug)
+    6. Compute all metrics on full-resolution outputs
 
     Args:
         user_id: str, user identifier
-        user_samples: list of int, sample indices for this user
-        base_dataset: PPSPreferencePairDataset
+        eval_samples: list of int, sample indices from eval_dataset (fixed 16 samples)
+        eval_dataset: PPSPreferencePairDataset for evaluation
+        train_val_samples: list of int, sample indices from train_val_dataset
+        train_val_dataset: PPSPreferencePairDataset for training
         model: HIIF_PPS model (encoder only, decoder will be created)
         config: dict, validation config
         metrics_calc: PPSMetrics instance
@@ -720,11 +725,11 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     """
     log_fn(f"\n{'='*80}")
     log_fn(f"Validating user: {user_id}")
-    log_fn(f"Total samples available: {len(user_samples)}")
+    log_fn(f"Evaluation samples: {len(eval_samples)} (fixed from evaluation dataset)")
+    log_fn(f"Training/validation samples: {len(train_val_samples)} (before exclusion)")
 
     # Get configuration
     samples_per_user = config['decoder_training']['samples_per_user']
-    eval_samples_per_user = config['decoder_training'].get('eval_samples_per_user', 8)
     max_iterations = config['decoder_training']['max_iterations']
 
     # Random seed control for sample selection
@@ -735,81 +740,69 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     else:
         log_fn(f"Sample selection seed: random mode (seed={sample_seed})")
 
-    # Check if we have enough samples for meaningful validation
-    min_required = eval_samples_per_user + 1  # At least 1 train sample + eval samples
-    if len(user_samples) < min_required:
-        log_fn(f"ERROR: User has only {len(user_samples)} samples, need at least {min_required}")
+    # 1. Use evaluation samples directly (fixed from evaluation dataset)
+    log_fn(f"\n[Evaluation Samples]")
+    log_fn(f"Using {len(eval_samples)} fixed evaluation samples from evaluation dataset")
+
+    # 2. Build evaluation image_id set for exclusion
+    eval_image_ids = set()
+    for sample_idx in eval_samples:
+        sample = eval_dataset.samples[sample_idx]
+        eval_image_ids.add(sample['image_id'])
+
+    log_fn(f"Evaluation image_ids: {sorted(eval_image_ids)}")
+
+    # 3. Filter training samples to exclude evaluation image_ids
+    log_fn(f"\n[Training Sample Selection]")
+    train_candidates = []
+    excluded_count = 0
+    for sample_idx in train_val_samples:
+        sample = train_val_dataset.samples[sample_idx]
+        if sample['image_id'] not in eval_image_ids:
+            train_candidates.append(sample_idx)
+        else:
+            log_fn(f"  Excluding sample {sample_idx} (image_id={sample['image_id']}) - matches evaluation set")
+            excluded_count += 1
+
+    log_fn(f"Training candidates after exclusion: {len(train_candidates)} (excluded {excluded_count} matching eval image_ids)")
+
+    # 4. Check if we have enough training samples
+    if len(train_candidates) == 0:
+        log_fn(f"ERROR: No training samples available after excluding evaluation samples!")
         log_fn(f"       SKIPPING validation for this user")
         return {
             'user_id': user_id,
             'status': 'skipped',
-            'reason': 'insufficient_samples',
-            'available_samples': len(user_samples),
-            'required_samples': min_required
+            'reason': 'no_training_samples_after_exclusion',
+            'eval_samples': len(eval_samples),
+            'train_val_samples_before_exclusion': len(train_val_samples),
+            'excluded_samples': excluded_count
         }
 
-    # Adaptive train/eval split: ALWAYS prioritize eval_samples_per_user (FIXED)
-    # Training samples are ADAPTIVE (flexible)
-    total_available = len(user_samples)
+    # 5. Sample training set (up to samples_per_user, or all if fewer available)
+    train_count = min(samples_per_user, len(train_candidates))
 
-    # CRITICAL: eval_count is ALWAYS the requested amount (non-negotiable)
-    eval_count = eval_samples_per_user
-
-    # Training samples adapt based on what's available after reserving eval samples
-    ideal_train = samples_per_user
-    available_for_train = total_available - eval_count
-
-    if available_for_train >= ideal_train:
-        # Normal case: have enough samples for both requested train + requested eval
-        train_count = ideal_train
-        log_fn(f"Normal split: {train_count} train + {eval_count} eval (have {total_available} available)")
+    if len(train_candidates) <= train_count:
+        # Use all available samples
+        train_samples = train_candidates
+        log_fn(f"Using all {len(train_samples)} available training samples (requested {samples_per_user}, adaptive)")
     else:
-        # Adaptive case: use all available samples for training (after reserving eval)
-        train_count = available_for_train
-        log_fn(f"ADAPTIVE split: {train_count} train + {eval_count} eval (only {total_available} available)")
-        log_fn(f"               Requested {ideal_train} train but using {train_count} (adaptive)")
+        # Random sample
+        train_samples = random.sample(train_candidates, train_count)
+        log_fn(f"Sampled {train_count} training samples from {len(train_candidates)} candidates")
 
-    # Sample EVALUATION set FIRST (to guarantee the fixed amount)
-    eval_samples = random.sample(user_samples, eval_count)
-    log_fn(f"Sampled {eval_count} evaluation samples (FIXED, from {len(user_samples)} total)")
+    log_fn(f"\n[Sample Split Summary]")
+    log_fn(f"Final split: {len(train_samples)} train + {len(eval_samples)} eval (exclusive by image_id)")
+    log_fn(f"  Train samples: {len(train_samples)} (from train_val_dataset)")
+    log_fn(f"  Eval samples: {len(eval_samples)} (from eval_dataset, fixed)")
+    log_fn(f"  Exclusion: {excluded_count} train_val samples matched eval image_ids")
 
-    # Sample TRAINING set from REMAINING samples only (CRITICAL for exclusive split)
-    remaining_samples = [s for s in user_samples if s not in eval_samples]
-
-    if len(remaining_samples) < train_count:
-        # This should never happen with the adaptive logic above
-        log_fn(f"CRITICAL ERROR: Logic bug - only {len(remaining_samples)} remaining for {train_count} train samples")
-        log_fn(f"                Expected {train_count} = {total_available} - {eval_count}")
-        raise ValueError(f"Validation logic error: insufficient samples for training after eval split")
-
-    if len(remaining_samples) == train_count:
-        # Use all remaining samples
-        train_samples = remaining_samples
-        log_fn(f"Using all {len(train_samples)} remaining samples for training")
-    else:
-        # Sample from remaining
-        train_samples = random.sample(remaining_samples, train_count)
-        log_fn(f"Sampled {train_count} training samples (from {len(remaining_samples)} remaining)")
-
-    # Verify no overlap (should never fail with new sampling order)
-    overlap = set(train_samples) & set(eval_samples)
-    if len(overlap) > 0:
-        log_fn(f"CRITICAL ERROR: Train/eval overlap detected! {len(overlap)} samples: {overlap}")
-        raise ValueError(f"Train/eval samples must not overlap! Found {len(overlap)} overlapping samples.")
-
-    # STRICT CHECK: Verify we got exactly the requested eval samples
-    if len(eval_samples) != eval_samples_per_user:
-        log_fn(f"CRITICAL ERROR: Got {len(eval_samples)} eval samples, expected {eval_samples_per_user}")
-        raise ValueError(f"Failed to sample requested {eval_samples_per_user} evaluation samples, got {len(eval_samples)}")
-
-    log_fn(f"Sample split verified: {len(train_samples)} train + {len(eval_samples)} eval = {len(train_samples) + len(eval_samples)} (exclusive, no overlap, eval count GUARANTEED)")
-
-    # Create training dataloader (cropped patches)
+    # Create training dataloader (cropped patches) - uses train_val_dataset
     train_aug_config = config['augmentation']['train_aug']
     batch_size = config['decoder_training']['batch_size']
     num_workers = config['decoder_training'].get('num_workers', 8)  # Default: 8
     batch_image = config['decoder_training'].get('batch_image', None)  # Optional: batch_image for efficient I/O
-    train_loader = create_dataloader_with_aug(base_dataset, train_samples,
+    train_loader = create_dataloader_with_aug(train_val_dataset, train_samples,
                                              train_aug_config, batch_size, num_workers,
                                              batch_image=batch_image)
 
@@ -821,10 +814,10 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     eval_batch_size = config['decoder_training'].get('eval_batch_size', 1)
     eval_num_workers = config['decoder_training'].get('eval_num_workers', 0)
 
-    # Create evaluation dataloaders (full resolution)
+    # Create evaluation dataloaders (full resolution) - uses eval_dataset
     eval_loaders = {
         'clean': create_fullimage_dataloader(
-            base_dataset, eval_samples,
+            eval_dataset, eval_samples,
             config['augmentation']['clean'], batch_size=eval_batch_size,
             num_workers=eval_num_workers
         ),
@@ -833,7 +826,7 @@ def validate_user(user_id: str, user_samples: List[int], base_dataset,
     # Only add aug if it exists in config
     if 'aug' in config['augmentation']:
         eval_loaders['aug'] = create_fullimage_dataloader(
-            base_dataset, eval_samples,
+            eval_dataset, eval_samples,
             config['augmentation']['aug'], batch_size=eval_batch_size,
             num_workers=eval_num_workers
         )

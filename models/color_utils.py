@@ -395,3 +395,59 @@ def lab_to_rgb(lab, illuminant='D65'):
     )
 
     return rgb.clamp(0, 1)
+
+
+def rgb_to_yuv(rgb):
+    """Convert RGB to YUV color space (BT.709 standard, differentiable).
+
+    Uses BT.709 (Rec.709) coefficients for HD content.
+
+    Args:
+        rgb: Tensor of shape (B, 3, H, W) with values in [0, 1]
+
+    Returns:
+        yuv: Tensor of shape (B, 3, H, W)
+             Y in [0, 1] (luma)
+             U in [-0.5, 0.5] (blue-difference chroma)
+             V in [-0.5, 0.5] (red-difference chroma)
+    """
+    r, g, b = rgb[:, 0:1, :, :], rgb[:, 1:2, :, :], rgb[:, 2:3, :, :]
+
+    # BT.709 coefficients (for HD content)
+    # Y = 0.2126*R + 0.7152*G + 0.0722*B
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    # U and V are normalized to [-0.5, 0.5] for consistency with training range
+    # U = (B - Y) / (2 * (1 - 0.0722)) = (B - Y) / 1.8556
+    # V = (R - Y) / (2 * (1 - 0.2126)) = (R - Y) / 1.5748
+    u = (b - y) / 1.8556
+    v = (r - y) / 1.5748
+
+    return torch.cat([y, u, v], dim=1)
+
+
+def yuv_to_rgb(yuv):
+    """Convert YUV to RGB color space (BT.709 standard, differentiable).
+
+    Args:
+        yuv: Tensor of shape (B, 3, H, W)
+             Y in [0, 1]
+             U in [-0.5, 0.5]
+             V in [-0.5, 0.5]
+
+    Returns:
+        rgb: Tensor of shape (B, 3, H, W) with values in [0, 1]
+    """
+    y, u, v = yuv[:, 0:1, :, :], yuv[:, 1:2, :, :], yuv[:, 2:3, :, :]
+
+    # Inverse BT.709 transformation
+    # R = Y + V * (2 * (1 - 0.2126)) = Y + V * 1.5748
+    # G = Y - U * (2 * 0.0722 * (1 - 0.0722) / 0.7152) - V * (2 * 0.2126 * (1 - 0.2126) / 0.7152)
+    #   = Y - U * 0.1873 - V * 0.4681
+    # B = Y + U * (2 * (1 - 0.0722)) = Y + U * 1.8556
+    r = y + v * 1.5748
+    g = y - u * 0.1873 - v * 0.4681
+    b = y + u * 1.8556
+
+    rgb = torch.cat([r, g, b], dim=1)
+    return rgb.clamp(0, 1)
