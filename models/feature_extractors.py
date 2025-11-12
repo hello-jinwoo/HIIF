@@ -547,7 +547,7 @@ class SAMFeatureExtractor(VisionFeatureExtractor):
 
     def extract_features(self, images: torch.Tensor) -> torch.Tensor:
         """
-        Extract SAM image encoder features.
+        Extract SAM ViT backbone features (before neck projection).
 
         Args:
             images: (B, 3, H, W) in [0, 1]
@@ -559,7 +559,6 @@ class SAMFeatureExtractor(VisionFeatureExtractor):
         images = images.to(self.device)
 
         # SAM expects 1024x1024 input (native resolution)
-        # For efficiency, we use 224x224 (same as other models) and adjust
         if images.shape[-2:] != (1024, 1024):
             images = F.interpolate(
                 images,
@@ -577,29 +576,124 @@ class SAMFeatureExtractor(VisionFeatureExtractor):
         std = torch.tensor([58.395, 57.12, 57.375]).view(1, 3, 1, 1).to(images.device)
         images = (images - mean) / std
 
-        # Extract features using image encoder
+        # Extract ViT backbone features (before neck projection)
         with torch.no_grad():
-            # SAM image encoder outputs (B, C, H, W) where C is embed_dim
-            # For ViT-B: (B, 768, 64, 64)
-            # For ViT-L: (B, 1024, 64, 64)
-            # For ViT-H: (B, 1280, 64, 64)
-            features = self.sam.image_encoder(images)  # (B, C, H, W)
+            # Patch embedding
+            x = self.sam.image_encoder.patch_embed(images)  # (B, H, W, C)
+
+            # Add positional encoding
+            if self.sam.image_encoder.pos_embed is not None:
+                x = x + self.sam.image_encoder.pos_embed
+
+            # Apply transformer blocks
+            for blk in self.sam.image_encoder.blocks:
+                x = blk(x)
+            # x is now (B, H, W, C) where C is the ViT embedding dim
+
+            # Convert to (B, C, H, W) format for pooling
+            x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
 
             # Global Average Pooling to get fixed-size vectors
-            features = features.mean(dim=[2, 3])  # (B, C)
+            features = x.mean(dim=[2, 3])  # (B, C)
 
         return features  # (B, output_dim)
 
 
-def create_feature_extractor(model_name: str,
-                             variant: str = None,
-                             device: str = 'cuda') -> VisionFeatureExtractor:
+def get_feature_extractor_dim(model_name: str) -> int:
     """
-    Factory function to create feature extractors.
+    Get the output dimension of a feature extractor without loading the model.
+
+    This function provides a lightweight way to determine feature dimensions
+    for configuration purposes, without the overhead of actually loading models.
+
+    Fixed variants per model:
+    - CLIP: ViT-B/16 → 512 dims
+    - DINO: dino_vitb16 → 768 dims
+    - DINOv2: dinov2-base → 768 dims
+    - DINOv3: dinov3_vitb16 → 768 dims
+    - SAM: vit_b → 768 dims
 
     Args:
-        model_name: 'clip', 'dino', 'dinov3', or 'sam'
-        variant: Model variant (optional, uses default if None)
+        model_name: 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'
+
+    Returns:
+        Output dimension (int)
+
+    Raises:
+        ValueError: If model_name is unknown
+
+    Examples:
+        >>> get_feature_extractor_dim('clip')
+        512
+        >>> get_feature_extractor_dim('dinov3')
+        768
+        >>> get_feature_extractor_dim('sam')
+        768
+    """
+    model_name = model_name.lower()
+
+    # Fixed dimensions for default variants
+    dimension_map = {
+        'clip': 512,       # ViT-B/16
+        'dino': 768,       # dino_vitb16
+        'dinov2': 768,     # dinov2-base
+        'dinov3': 768,     # dinov3_vitb16
+        'sam': 768,        # vit_b
+    }
+
+    if model_name in dimension_map:
+        return dimension_map[model_name]
+    else:
+        raise ValueError(
+            f"Unknown model: {model_name}. Choose 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'."
+        )
+
+
+def get_fixed_variant(model_name: str) -> str:
+    """
+    Get the fixed variant for a model.
+
+    Args:
+        model_name: 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'
+
+    Returns:
+        Fixed variant string
+
+    Raises:
+        ValueError: If model_name is unknown
+    """
+    model_name = model_name.lower()
+
+    variant_map = {
+        'clip': 'ViT-B/16',
+        'dino': 'dino_vitb16',
+        'dinov2': 'dinov2-base',
+        'dinov3': 'dinov3_vitb16',
+        'sam': 'vit_b',
+    }
+
+    if model_name in variant_map:
+        return variant_map[model_name]
+    else:
+        raise ValueError(
+            f"Unknown model: {model_name}. Choose 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'."
+        )
+
+
+def create_feature_extractor(model_name: str,
+                             device: str = 'cuda') -> VisionFeatureExtractor:
+    """
+    Factory function to create feature extractors with fixed variants.
+
+    Fixed variants per model:
+    - CLIP: ViT-B/16
+    - DINO: dino_vitb16
+    - DINOv2: dinov2-base
+    - DINOv3: dinov3_vitb16
+    - SAM: vit_b
+
+    Args:
+        model_name: 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'
         device: Device to load model on
 
     Returns:
@@ -607,33 +701,29 @@ def create_feature_extractor(model_name: str,
 
     Examples:
         >>> clip_extractor = create_feature_extractor('clip')
-        >>> dino_extractor = create_feature_extractor('dino', variant='dino_vits16')
-        >>> dinov3_extractor = create_feature_extractor('dinov3', variant='dinov3_vitb16')
-        >>> sam_extractor = create_feature_extractor('sam', variant='vit_b')
+        >>> dino_extractor = create_feature_extractor('dino')
+        >>> dinov3_extractor = create_feature_extractor('dinov3')
+        >>> sam_extractor = create_feature_extractor('sam')
     """
     model_name = model_name.lower()
+    variant = get_fixed_variant(model_name)
 
     if model_name == 'clip':
-        variant = variant or 'ViT-B/16'
         return CLIPFeatureExtractor(variant=variant, device=device)
 
     elif model_name == 'dino':
-        variant = variant or 'dino_vitb16'
         return DINOFeatureExtractor(variant=variant, device=device)
 
     elif model_name == 'dinov2':
-        variant = variant or 'dinov2-base'
         return DINOv2FeatureExtractor(variant=variant, device=device)
 
     elif model_name == 'dinov3':
-        variant = variant or 'dinov3_vitb16'
         return DINOv3FeatureExtractor(variant=variant, device=device)
 
     elif model_name == 'sam':
-        variant = variant or 'vit_b'
         return SAMFeatureExtractor(variant=variant, device=device)
 
     else:
         raise ValueError(
-            f"Unknown model: {model_name}. Choose 'clip', 'dino', 'dinov3', or 'sam'."
+            f"Unknown model: {model_name}. Choose 'clip', 'dino', 'dinov2', 'dinov3', or 'sam'."
         )

@@ -28,25 +28,24 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Extract UPEs for all users')
     parser.add_argument('--config', type=str, default=None,
                        help='Config file (YAML)')
-    parser.add_argument('--split', type=str, default='train',
-                       choices=['train', 'validation'],
-                       help='Dataset split')
-    parser.add_argument('--root_path', type=str, default='./load/PPS/images',
-                       help='Root path to images')
+    parser.add_argument('--split', type=str, default=None,
+                       help='Dataset split (can be any folder name under responses/)')
+    parser.add_argument('--root_path', type=str, default=None,
+                       help='Root path to images (default: ./load/PPS/images)')
     parser.add_argument('--response_dir', type=str, default=None,
                        help='Response directory (auto-set based on split if None)')
-    parser.add_argument('--cache_dir', type=str, default='./cache/upe',
-                       help='Cache directory')
-    parser.add_argument('--content_model', type=str, default='dino',
-                       choices=['clip', 'dino'],
-                       help='Content model')
-    parser.add_argument('--color_model', type=str, default='clip',
-                       choices=['clip', 'dino'],
-                       help='Color model')
-    parser.add_argument('--num_pairs', type=int, default=16,
-                       help='Number of preference pairs for UPE extraction')
-    parser.add_argument('--device', type=str, default='cuda',
-                       help='Device (cuda/cpu)')
+    parser.add_argument('--cache_dir', type=str, default=None,
+                       help='Cache directory (default: ./cache/upe)')
+    parser.add_argument('--content_model', type=str, default=None,
+                       choices=['clip', 'dino', 'sam'],
+                       help='Content model (default: dino)')
+    parser.add_argument('--color_model', type=str, default=None,
+                       choices=['clip', 'dino', 'dinov2'],
+                       help='Color model (default: clip)')
+    parser.add_argument('--num_pairs', type=int, default=None,
+                       help='Number of preference pairs for UPE extraction (default: 16)')
+    parser.add_argument('--device', type=str, default=None,
+                       help='Device (cuda/cpu) (default: cuda)')
     parser.add_argument('--force_recompute', action='store_true',
                        help='Force recompute even if cache exists')
     parser.add_argument('--verbose', action='store_true',
@@ -66,12 +65,33 @@ def main():
     # Load config if provided
     if args.config is not None:
         config = load_config(args.config)
-        # Override with command line args
+        # Only override with explicitly provided command line args
+        # (i.e., skip None values which were not provided)
         for key, value in vars(args).items():
             if value is not None and key != 'config':
                 config[key] = value
     else:
         config = vars(args)
+
+    # Set defaults for required fields if not specified in config or CLI
+    if config.get('split') is None:
+        config['split'] = 'train'
+    if config.get('root_path') is None:
+        config['root_path'] = './load/PPS/images'
+    if config.get('cache_dir') is None:
+        config['cache_dir'] = './cache/upe'
+    if config.get('content_model') is None:
+        config['content_model'] = 'dino'
+    if config.get('color_model') is None:
+        config['color_model'] = 'clip'
+    if config.get('num_pairs') is None:
+        config['num_pairs'] = 16
+    if config.get('device') is None:
+        config['device'] = 'cuda'
+    if config.get('force_recompute') is None:
+        config['force_recompute'] = False
+    if config.get('verbose') is None:
+        config['verbose'] = False
 
     # Auto-set response_dir based on split
     if config.get('response_dir') is None:
@@ -89,16 +109,12 @@ def main():
     print(f"Root path: {config['root_path']}")
     print(f"Response dir: {config['response_dir']}")
     print(f"Cache dir: {config['cache_dir']}")
-    print(f"Content model: {config['content_model']}")
-    print(f"Color model: {config['color_model']}")
+    print(f"Content model: {config['content_model']} (using fixed variant)")
+    print(f"Color model: {config['color_model']} (using fixed variant)")
     print(f"Num pairs: {config['num_pairs']}")
     print(f"Device: {config['device']}")
     print(f"Force recompute: {config['force_recompute']}")
     print("=" * 60)
-
-    # Validation
-    if config['content_model'] == config['color_model']:
-        raise ValueError("content_model and color_model must be different!")
 
     # Initialize dataset
     print("\n[1/5] Loading dataset...")
@@ -108,6 +124,7 @@ def main():
     )
     user_ids = dataset.get_user_ids()
     print(f"  Found {len(user_ids)} users")
+    print(f"  Dataset name: {dataset.dataset_name}")
 
     # Initialize UPE extractor
     print("\n[2/5] Initializing UPE extractor...")
@@ -127,8 +144,10 @@ def main():
     upe_cache = UPECache(
         cache_dir=config['cache_dir'],
         max_memory_size=100,
-        preload_to_gpu=False
+        preload_to_gpu=False,
+        dataset_name=dataset.dataset_name  # 🆕 Use dataset-specific subdirectory
     )
+    print(f"  Cache directory: {upe_cache.cache_dir}")
 
     # Prepare config for cache
     cache_config = {

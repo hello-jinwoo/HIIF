@@ -249,6 +249,14 @@ class PPSColorAugmentedWrapper(Dataset):
         gt_prefer = prefer_crop      # (3, H, W)
         gt_non_prefer = non_prefer_crop  # (3, H, W)
 
+        # DEBUG: Check if GTs are the same
+        if torch.equal(gt_prefer, gt_non_prefer):
+            print(f"[BUG DETECTED] User {sample['user_id']}, Image {sample['image_id']}: GT prefer and non_prefer are IDENTICAL!")
+            print(f"  prefer_idx: {sample.get('prefer_idx', 'N/A')}, non_prefer_idx: {sample.get('non_prefer_idx', 'N/A')}")
+        mse_diff = F.mse_loss(gt_prefer, gt_non_prefer).item()
+        if mse_diff < 1e-6:
+            print(f"[WARNING] User {sample['user_id']}, Image {sample['image_id']}: GTs are nearly identical (MSE: {mse_diff:.8f})")
+
         # Generate coordinates (same resolution - no upsampling)
         coord = make_coord([self.crop_size, self.crop_size], flatten=False)
         # coord: (crop_size, crop_size, 2), values in [-1, 1]

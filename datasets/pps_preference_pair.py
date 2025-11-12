@@ -179,6 +179,18 @@ class PPSPreferencePairDataset(Dataset):
             prefer_img = self._load_image(sample['prefer_path'])
             non_prefer_img = self._load_image(sample['non_prefer_path'])
 
+        # DEBUG: Check if paths are the same
+        if sample['prefer_path'] == sample['non_prefer_path']:
+            print(f"[BUG DETECTED] User {sample['user_id']}, Image {sample['image_id']}: prefer_path == non_prefer_path")
+            print(f"  Path: {sample['prefer_path']}")
+            print(f"  prefer_idx: {sample['prefer_idx']}, non_prefer_idx: {sample['non_prefer_idx']}")
+
+        # DEBUG: Check if images are identical
+        if torch.equal(prefer_img, non_prefer_img):
+            print(f"[BUG DETECTED] User {sample['user_id']}, Image {sample['image_id']}: Loaded images are IDENTICAL!")
+            print(f"  prefer_path: {sample['prefer_path']}")
+            print(f"  non_prefer_path: {sample['non_prefer_path']}")
+
         return {
             'image_id': sample['image_id'],
             'user_id': sample['user_id'],

@@ -7,6 +7,7 @@ Loads images at original resolution without resize/crop for patch-based evaluati
 from typing import Dict, Optional
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import transforms
 
@@ -109,13 +110,33 @@ class PPSFullImageWrapper(Dataset):
         """
         # Get base sample (full resolution)
         sample = self.dataset[idx]
-        prefer_img = sample['prefer']  # (3, H, W)
-        non_prefer_img = sample['non_prefer']  # (3, H, W)
+        prefer_img = sample['prefer']  # (3, H_p, W_p)
+        non_prefer_img = sample['non_prefer']  # (3, H_n, W_n)
 
-        # Get image dimensions
+        # Ensure both images have the same dimensions
+        # (prefer and non_prefer may have slightly different sizes due to different processing)
+        H_prefer, W_prefer = prefer_img.shape[-2:]
+        H_non_prefer, W_non_prefer = non_prefer_img.shape[-2:]
+
+        if H_prefer != H_non_prefer or W_prefer != W_non_prefer:
+            # Resize both to minimum dimensions to preserve maximum detail
+            H_min = min(H_prefer, H_non_prefer)
+            W_min = min(W_prefer, W_non_prefer)
+
+            # Resize using bicubic interpolation
+            prefer_img = F.interpolate(
+                prefer_img.unsqueeze(0), size=(H_min, W_min),
+                mode='bicubic', align_corners=False
+            ).squeeze(0)
+            non_prefer_img = F.interpolate(
+                non_prefer_img.unsqueeze(0), size=(H_min, W_min),
+                mode='bicubic', align_corners=False
+            ).squeeze(0)
+
+        # Get image dimensions (now guaranteed to be the same)
         H, W = prefer_img.shape[-2:]
 
-        # Create 4 input versions (no resize, no crop)
+        # Create 4 input versions
         versions = []
 
         # 1. Prefer original

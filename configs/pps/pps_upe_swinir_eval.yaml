@@ -230,8 +230,8 @@ val_dataset:
     args:
       root_path: ./load/PPS/images
 
-      # 📁 VALIDATION DATASET SELECTION (choose one):
-      response_dir: ./load/PPS/responses/validation
+      # 📁 EVALUATION DATASET
+      response_dir: ./load/PPS/responses/evaluation  # 🆕 EVALUATION dataset
       # response_dir: ./load/PPS/responses/validation    # ~20-30 users (for thorough evaluation)
 
       # ⚠️ Validation users는 train과 완전히 다름!

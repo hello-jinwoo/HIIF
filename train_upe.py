@@ -32,6 +32,69 @@ from datasets.pps_upe_wrapper import PPSUPEWrapper
 torch.backends.cudnn.benchmark = True
 
 
+def auto_configure_upe_input_dim(config):
+    """
+    Automatically calculate and inject UPE processor input_dim from upe_config.
+
+    This function:
+    1. Reads content_model and color_model from upe_config
+    2. Calculates the expected input_dim = content_dim + color_dim
+    3. Injects input_dim into upe_processor_config if not present
+    4. Injects content_dim and color_dim into upe_config for cache validation
+    5. Validates input_dim if manually specified
+
+    Args:
+        config: Configuration dictionary
+
+    Raises:
+        ValueError: If input_dim is specified but doesn't match expected value
+    """
+    from models.feature_extractors import get_feature_extractor_dim
+
+    upe_config = config.get('upe_config', {})
+    content_model = upe_config.get('content_model')
+    color_model = upe_config.get('color_model')
+
+    if not content_model or not color_model:
+        # If upe_config is not fully specified, skip auto-configuration
+        return
+
+    # Calculate expected dimensions (uses fixed variants per model)
+    content_dim = get_feature_extractor_dim(content_model)
+    color_dim = get_feature_extractor_dim(color_model)
+    expected_input_dim = content_dim + color_dim
+
+    # Inject dimensions into upe_config for cache validation
+    upe_config['content_dim'] = content_dim
+    upe_config['color_dim'] = color_dim
+
+    # Get or create upe_processor_config
+    if 'model' not in config or 'args' not in config['model']:
+        return  # No model config, skip
+
+    model_args = config['model']['args']
+    if 'upe_processor_config' not in model_args:
+        model_args['upe_processor_config'] = {}
+
+    upe_processor_config = model_args['upe_processor_config']
+
+    if 'input_dim' in upe_processor_config:
+        # Validate manually specified input_dim
+        actual_input_dim = upe_processor_config['input_dim']
+        if actual_input_dim != expected_input_dim:
+            print(f"⚠️  WARNING: UPE processor input_dim mismatch!")
+            print(f"   Expected: {expected_input_dim} ({content_model}={content_dim} + {color_model}={color_dim})")
+            print(f"   Got: {actual_input_dim}")
+            print(f"   Using auto-calculated value: {expected_input_dim}")
+            upe_processor_config['input_dim'] = expected_input_dim
+    else:
+        # Auto-inject calculated input_dim
+        upe_processor_config['input_dim'] = expected_input_dim
+        print(f"✅ Auto-configured UPE processor input_dim: {expected_input_dim}")
+        print(f"   Content: {content_model} ({content_dim})")
+        print(f"   Color: {color_model} ({color_dim})")
+
+
 def validate_config(config):
     """Validate configuration parameters.
 
@@ -49,8 +112,8 @@ def validate_config(config):
 
     # Validate UPE config
     upe_config = config['upe_config']
-    if upe_config['content_model'] == upe_config['color_model']:
-        raise ValueError("content_model and color_model must be different")
+    # Note: content_model and color_model CAN be the same (as of 2025-11-05 update)
+    # They use different aggregation methods (average vs subtraction)
 
     # Validate train_dataset parameters
     td = config['train_dataset']
@@ -63,11 +126,11 @@ def validate_config(config):
     if 'loss_schedule' in config:
         ws = config['loss_schedule']
         if 'w_p_start' in ws:
-            if not (0 <= ws['w_p_start'] <= 2):
-                raise ValueError(f"w_p_start must be in [0,2], got {ws['w_p_start']}")
+            if not (0 <= ws['w_p_start'] <= 10):
+                raise ValueError(f"w_p_start must be in [0,10], got {ws['w_p_start']}")
         if 'w_p_end' in ws:
-            if not (0 <= ws['w_p_end'] <= 2):
-                raise ValueError(f"w_p_end must be in [0,2], got {ws['w_p_end']}")
+            if not (0 <= ws['w_p_end'] <= 10):
+                raise ValueError(f"w_p_end must be in [0,10], got {ws['w_p_end']}")
 
     # Validate epoch parameters
     if config['epoch_max'] <= 0:
@@ -134,19 +197,25 @@ def make_upe_data_loader(spec, upe_cache, upe_config, tag='', base_dataset=None)
         cache_policy='fail_fast'  # Ensure all UPEs are extracted
     )
 
-    # Preload all UPEs to CPU
-    log(f'Preloading UPEs...')
-    upe_dataset.preload_all_upes(show_progress=True)
-    stats = upe_dataset.get_cache_stats()
-    log(f'  Loaded {stats["loaded_users"]} UPEs')
+    # Use lazy loading - UPEs loaded on-demand as users are encountered
+    log(f'Using lazy UPE loading (on-demand)')
+    log(f'  UPEs will be loaded from cache as needed during training')
+    log(f'  This scales efficiently to any number of users')
 
     # Sample output for debugging
-    sample = upe_dataset[0]
-    for k, v in sample.items():
-        if isinstance(v, torch.Tensor):
-            log(f'  {k}: shape={tuple(v.shape)}')
-        else:
-            log(f'  {k}: {type(v).__name__}')
+    if len(upe_dataset) > 0:
+        sample = upe_dataset[0]
+        for k, v in sample.items():
+            if isinstance(v, torch.Tensor):
+                log(f'  {k}: shape={tuple(v.shape)}')
+            else:
+                log(f'  {k}: {type(v).__name__}')
+    else:
+        log(f'  WARNING: Dataset is empty (no samples available)')
+        if tag == 'val':
+            log(f'  This can happen when validation users have insufficient data')
+            log(f'  Training will proceed without validation monitoring')
+        return None, base_dataset, split_info
 
     # Create DataLoader with mixed-user batching
     # UPEs are kept on CPU and moved to GPU in training loop
@@ -185,8 +254,7 @@ def make_data_loaders(upe_cache_base_dir, upe_config):
     # Create train-specific UPE cache
     train_upe_cache = UPECache(
         cache_dir=upe_cache_base_dir,
-        max_memory_size=100,
-        dataset_name=train_dataset_name
+        max_memory_size=100
     )
     log(f'Train UPE Cache: {train_upe_cache.cache_dir}')
 
@@ -208,8 +276,7 @@ def make_data_loaders(upe_cache_base_dir, upe_config):
         # Create val-specific UPE cache
         val_upe_cache = UPECache(
             cache_dir=upe_cache_base_dir,
-            max_memory_size=100,
-            dataset_name=val_dataset_name
+            max_memory_size=100
         )
         log(f'Val UPE Cache: {val_upe_cache.cache_dir}')
 
@@ -221,6 +288,10 @@ def make_data_loaders(upe_cache_base_dir, upe_config):
             tag='val',
             base_dataset=val_base_dataset
         )
+
+        # Check if validation dataset is empty (make_upe_data_loader returns None)
+        if val_loader is None:
+            log(f'Validation dataset is empty, proceeding without validation')
     else:
         val_loader, val_split = None, None
 
@@ -374,7 +445,7 @@ def validate(val_loader, model, epoch, device):
     psnr_non_prefer_meter = utils.Averager()
 
     with torch.no_grad():
-        for batch in tqdm(val_loader, leave=False, desc='Validation'):
+        for batch_idx, batch in enumerate(tqdm(val_loader, leave=False, desc='Validation')):
             # Move to GPU
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
@@ -396,9 +467,27 @@ def validate(val_loader, model, epoch, device):
             gt_prefer_denorm = normalizer.denormalize_gt(gt_prefer)
             gt_non_prefer_denorm = normalizer.denormalize_gt(gt_non_prefer)
 
+            # DEBUG: Check if GTs are identical
+            if torch.equal(gt_prefer_denorm, gt_non_prefer_denorm):
+                log(f"[BUG] Validation batch: gt_prefer_denorm == gt_non_prefer_denorm (IDENTICAL!)")
+            import torch.nn.functional as F_debug
+            mse_gt = F_debug.mse_loss(gt_prefer_denorm, gt_non_prefer_denorm).item()
+            if mse_gt < 1e-6:
+                log(f"[BUG] Validation batch: GTs nearly identical (MSE: {mse_gt:.10f})")
+            elif batch_idx == 0:  # Log first batch
+                log(f"[DEBUG] Validation batch 0: GT MSE difference: {mse_gt:.6f}")
+
             # Compute PSNR
             psnr_prefer = utils.calc_psnr(pred_denorm, gt_prefer_denorm)
             psnr_non_prefer = utils.calc_psnr(pred_denorm, gt_non_prefer_denorm)
+
+            # DEBUG: Check if PSNRs are identical
+            if abs(psnr_prefer.item() - psnr_non_prefer.item()) < 0.01 and batch_idx == 0:
+                log(f"[WARNING] Batch {batch_idx}: PSNRs nearly identical!")
+                log(f"  PSNR (prefer): {psnr_prefer.item():.4f} dB")
+                log(f"  PSNR (non-prefer): {psnr_non_prefer.item():.4f} dB")
+                log(f"  GT MSE diff: {mse_gt:.6f}")
+                log(f"  pred shape: {pred_denorm.shape}, gt_prefer shape: {gt_prefer_denorm.shape}")
 
             psnr_prefer_meter.add(psnr_prefer.item())
             psnr_non_prefer_meter.add(psnr_non_prefer.item())
@@ -432,6 +521,10 @@ def main(config_, save_path_, device):
     csv_file.flush()
     log(f'Training metrics will be logged to: {csv_path}')
 
+    # Auto-configure UPE input_dim if not specified
+    log('Auto-configuring UPE processor input_dim...')
+    auto_configure_upe_input_dim(config)
+
     # Validate configuration
     log('Validating configuration...')
     validate_config(config)
@@ -443,6 +536,11 @@ def main(config_, save_path_, device):
     # Initialize UPE cache (dataset-specific caches will be created in make_data_loaders)
     upe_config = config['upe_config']
     upe_cache_base_dir = upe_config.get('cache_dir', './cache/upe')
+
+    # Add dimension information to upe_config for cache validation
+    from models.feature_extractors import get_feature_extractor_dim
+    upe_config['content_dim'] = get_feature_extractor_dim(upe_config['content_model'])
+    upe_config['color_dim'] = get_feature_extractor_dim(upe_config['color_model'])
 
     log(f'UPE Cache base directory: {upe_cache_base_dir}')
     log(f'  Dataset-specific caches will be created automatically')

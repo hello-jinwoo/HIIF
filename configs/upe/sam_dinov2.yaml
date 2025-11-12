@@ -1,12 +1,11 @@
 # UPE Extraction Configuration
 # Content Model: SAM | Color Model: DINOv2
 # Output: (16, 1536) = sam(768) + dinov2(768)
+# Using fixed variants per model
 
-# Feature extraction models
-content_model: sam          # SAM for content features
-content_model_variant: vit_b        # 768 dims
-color_model: dinov2         # DINOv2 for color/style features
-color_model_variant: dinov2-base    # 768 dims
+# Feature extraction models (variants are fixed in code)
+content_model: sam          # SAM for content features (fixed variant: vit_b, 768 dims)
+color_model: dinov2         # DINOv2 for color/style features (fixed variant: dinov2-base, 768 dims)
 
 # UPE settings
 num_pairs: 16               # Number of preference pairs for UPE extraction

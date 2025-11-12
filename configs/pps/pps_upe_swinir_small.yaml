@@ -48,9 +48,9 @@ model:
         no_upsampling: true
         # SwinIR configurable parameters:
         # img_size: auto-set from crop_size (128) - DO NOT override!
-        embed_dim: 180              # Feature embedding dimension
-        depths: [6, 6, 6, 6, 6, 6]  # Number of blocks per stage (6 stages)
-        num_heads: [6, 6, 6, 6, 6, 6]  # Attention heads per stage
+        embed_dim: 120              # Feature embedding dimension
+        depths: [4, 4, 4, 4, 4, 4]  # Number of blocks per stage (6 stages)
+        num_heads: [4, 4, 4, 4, 4, 4]  # Attention heads per stage
         window_size: 8              # Window size for attention (⚠️ crop_size must be multiple of this!)
         mlp_ratio: 2.0              # MLP expansion ratio
         # Regularization parameters:
@@ -61,9 +61,9 @@ model:
 
     # 🆕 INCREASED DECODER CAPACITY (baseline: hidden_dim=256, blocks=16)
     # Global decoder는 모든 users를 처리해야 하므로 capacity 증가
-    hidden_dim: 384  # ⬆️ 256 → 384 (50% increase)
-    blocks: 24       # ⬆️ 16 → 24 (50% increase)  ⚠️ MUST divide hidden_dim evenly: 384/24=16
-    upe_dim: 256     # UPE output dimension
+    hidden_dim: 256  # ⬆️ 256 → 384 (50% increase)
+    blocks: 16       # ⬆️ 16 → 24 (50% increase)  ⚠️ MUST divide hidden_dim evenly: 384/24=16
+    upe_dim: 128     # UPE output dimension
     # → Decoder parameters: ~10M (baseline user decoder의 2배)
 
     # Note: input_type and output_type are hardcoded in HIIF_Global_UPE
@@ -75,10 +75,10 @@ model:
     upe_processor_config:
       # input_dim: Auto-calculated from upe_config (content_model + color_model dimensions)
       projection_dim: 256   # 🆕 Learnable per-vector projection (addresses normalization issues)
-      hidden_dim: 512       # Transformer internal dimension
-      output_dim: 256       # Output dimension (upe_dim)
+      hidden_dim: 256       # Transformer internal dimension
+      output_dim: 128       # Output dimension (upe_dim)
       num_layers: 3         # 🆕 Shallow transformer (16 vectors는 작으므로 충분)
-      num_heads: 8          # Multi-head attention heads
+      num_heads: 4          # Multi-head attention heads
       dropout: 0.1          # Dropout rate (transformer에는 중요)
       # Note: ffn_dim is hardcoded as hidden_dim * 4 = 2048
       # Note: activation is hardcoded as 'gelu'
@@ -89,7 +89,7 @@ upe_config:
   # Feature extractor 모델 선택 (고정 variant 사용)
   # Fixed variants: clip (ViT-B/16, 512-dim), dino (vitb16, 768-dim),
   #                 dinov2 (base, 768-dim), dinov3 (vitb16, 768-dim), sam (vit_b, 768-dim)
-  content_model: dinov2  # 🔬 Options: dino, dinov2, dinov3, clip, sam
+  content_model: sam  # 🔬 Options: dino, dinov2, dinov3, clip, sam
                          # DINOv3: Latest self-supervised vision model (Meta AI 2025)
                          # Better semantic/structural features than DINO v1
                          # 출력: (768,) per image (fixed variant: dinov3_vitb16)
@@ -173,7 +173,7 @@ train_dataset:
         saturation: 0.1  # HSV S channel ± 10%
         hue: 0.05        # HSV H channel ± 5% (작게 유지)
 
-  batch_size: 4  # 2 samples × 4 augmented = 8 images per batch
+  batch_size: 8  # 2 samples × 4 augmented = 8 images per batch
                  # ⚠️ SwinIR은 메모리를 더 많이 사용함!
                  # 🔬 GPU memory에 따라 조절: 1 (8GB), 2 (12GB), 4 (24GB)
 
@@ -203,7 +203,7 @@ optimizer:
 #     T_max: 200             # Total epochs (same as epoch_max)
 
 # Training duration
-epoch_max: 50  # 🔬 Full training: 200-500 epochs
+epoch_max: 100  # 🔬 Full training: 200-500 epochs
                 # Quick test: 50 epochs
                 # Pilot study: 100 epochs
                 # ⚠️ SwinIR는 수렴이 느릴 수 있음 (transformer 특성)
@@ -214,10 +214,10 @@ epoch_save: 10  # Save checkpoint every 10 epochs
 # 🆕 DUAL GROUND TRUTH LOSS SCHEDULING
 # L_total = w_p × L1(pred, gt_prefer) + (1 - w_p) × L1(pred, gt_non_prefer)
 loss_schedule:
-  schedule_type: linear  # ⬆️ LINEAR for SwinIR (not exponential!)
+  schedule_type: logarithmic  # ⬆️ LINEAR for SwinIR (not exponential!)
                          # Transformer는 linear schedule이 더 안정적
   w_p_start: 0.5  # 초기: prefer/non_prefer 균등 (50%/50%)
-  w_p_end: 2.0    # ⬆️ 최종: prefer 더 집중 (90%/10%) - EDSR보다 높게
+  w_p_end: 1.5    # ⬆️ 최종: prefer 더 집중 (90%/10%) - EDSR보다 높게
   # → 학습 초반: 둘 다 학습, 후반: prefer에 더 집중
 
 # =============================================================================
@@ -245,7 +245,7 @@ val_dataset:
                       # SwinIR의 positional encoding이 crop_size에 의존
       augment: false  # 🔒 Validation: No augmentation
 
-  batch_size: 4
+  batch_size: 8
 
 
 

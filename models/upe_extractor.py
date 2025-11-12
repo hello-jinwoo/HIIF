@@ -82,9 +82,7 @@ class UPEExtractor(nn.Module):
 
     def __init__(self,
                  content_model_name: str = 'dino',
-                 content_model_variant: str = None,
                  color_model_name: str = 'clip',
-                 color_model_variant: str = None,
                  num_pairs: int = 16,
                  normalize: bool = True,
                  use_adaptive_projection: bool = False,
@@ -92,12 +90,12 @@ class UPEExtractor(nn.Module):
                  device: str = 'cuda'):
         super().__init__()
 
-        # Create extractors
+        # Create extractors (using fixed variants per model)
         self.content_extractor = create_feature_extractor(
-            content_model_name, content_model_variant, device
+            content_model_name, device
         )
         self.color_extractor = create_feature_extractor(
-            color_model_name, color_model_variant, device
+            color_model_name, device
         )
 
         self.num_pairs = num_pairs

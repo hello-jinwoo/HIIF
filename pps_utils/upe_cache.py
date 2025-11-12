@@ -123,13 +123,23 @@ class UPECache:
         return hashlib.md5(config_str.encode()).hexdigest()[:8]
 
     def _get_cache_path(self, user_id: str, config: dict) -> Path:
-        """Generate cache filename with config hash."""
-        config_str = (
-            f"{config.get('content_model', 'dino')}_"
-            f"{config.get('color_model', 'clip')}_"
-            f"{config.get('num_pairs', 16)}"
-        )
-        return self.cache_dir / f"{user_id}_{config_str}.pt"
+        """
+        Generate cache path with model-pair subdirectory.
+
+        Path format: {cache_dir}/{model1}_{model2}/{user_id}_{model1}_{model2}.pt
+        Example: ./cache/upe/sam_dinov2/ZWvAVhb_desktop_sam_dinov2.pt
+        """
+        content_model = config.get('content_model', 'dino')
+        color_model = config.get('color_model', 'clip')
+
+        # Create model-pair subdirectory
+        model_pair_dir = self.cache_dir / f"{content_model}_{color_model}"
+        model_pair_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate filename (without num_pairs)
+        filename = f"{user_id}_{content_model}_{color_model}.pt"
+
+        return model_pair_dir / filename
 
     def exists(self, user_id: str, config: dict) -> bool:
         """Check if cache exists for user."""
@@ -214,9 +224,32 @@ class UPECache:
             upe = data['upe']
 
             # Validate shape
+            # Calculate expected dimensions from model names (if specified)
+            content_dim = config.get('content_dim')
+            color_dim = config.get('color_dim')
+
+            if content_dim is None or color_dim is None:
+                # Try to infer from model names
+                try:
+                    from models.feature_extractors import get_feature_extractor_dim
+                    content_model = config.get('content_model')
+                    color_model = config.get('color_model')
+
+                    if content_model and color_model:
+                        content_dim = get_feature_extractor_dim(content_model)
+                        color_dim = get_feature_extractor_dim(color_model)
+                    else:
+                        # Fallback to old defaults if model names not specified
+                        content_dim = content_dim or 768
+                        color_dim = color_dim or 512
+                except Exception:
+                    # Fallback to old defaults on error
+                    content_dim = content_dim or 768
+                    color_dim = color_dim or 512
+
             expected_shape = (
                 config.get('num_pairs', 16),
-                config.get('content_dim', 768) + config.get('color_dim', 512)
+                content_dim + color_dim
             )
             if tuple(upe.shape) != expected_shape:
                 warnings.warn(
@@ -341,27 +374,35 @@ class UPECache:
                         del self.metadata['cache_entries'][user_id]
                         self._save_metadata()
             else:
-                # Clear all configs for this user
+                # Clear all configs for this user (search all model-pair subdirs)
                 pattern = f"{user_id}_*.pt"
-                for cache_file in self.cache_dir.glob(pattern):
-                    cache_file.unlink()
+                for model_pair_dir in self.cache_dir.iterdir():
+                    if model_pair_dir.is_dir():
+                        for cache_file in model_pair_dir.glob(pattern):
+                            cache_file.unlink()
                 if user_id in self.metadata['cache_entries']:
                     del self.metadata['cache_entries'][user_id]
                     self._save_metadata()
         else:
-            # Clear all caches
-            for cache_file in self.cache_dir.glob("*.pt"):
-                cache_file.unlink()
+            # Clear all caches (in all model-pair subdirectories)
+            for model_pair_dir in self.cache_dir.iterdir():
+                if model_pair_dir.is_dir():
+                    for cache_file in model_pair_dir.glob("*.pt"):
+                        cache_file.unlink()
             self.metadata['cache_entries'] = {}
             self._save_metadata()
 
     def get_stats(self) -> dict:
         """Get cache statistics."""
-        total_size_bytes = sum(
-            f.stat().st_size for f in self.cache_dir.glob("*.pt")
-        )
+        # Search for .pt files in all model-pair subdirectories
+        cache_files = []
+        for model_pair_dir in self.cache_dir.iterdir():
+            if model_pair_dir.is_dir():
+                cache_files.extend(model_pair_dir.glob("*.pt"))
+
+        total_size_bytes = sum(f.stat().st_size for f in cache_files)
         return {
-            'disk_cache_count': len(list(self.cache_dir.glob("*.pt"))),
+            'disk_cache_count': len(cache_files),
             'memory_cache_count': len(self.memory_cache),
             'gpu_cache_count': len(self.gpu_cache),
             'disk_cache_size_mb': total_size_bytes / (1024 ** 2),

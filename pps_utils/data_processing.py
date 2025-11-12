@@ -275,11 +275,26 @@ def preprocess_pps_batch_with_upe(
     # Expand cell: (B, 2) -> (B*N, 2)
     cell = expand_to_BN(batch['cell'], N=num_augmentations)
 
+    # DEBUG: Check if batch GTs are identical BEFORE expansion
+    import torch.nn.functional as F
+    if torch.equal(batch['gt_prefer'], batch['gt_non_prefer']):
+        print("[BUG] preprocess_pps_batch_with_upe: batch['gt_prefer'] == batch['gt_non_prefer'] BEFORE expand!")
+        print(f"  User IDs: {batch['user_id']}")
+        mse_before = F.mse_loss(batch['gt_prefer'], batch['gt_non_prefer']).item()
+        print(f"  MSE: {mse_before}")
+
     # Expand prefer GT: (B, 3, H, W) -> (B*N, 3, H, W)
     gt_prefer = expand_to_BN(batch['gt_prefer'], N=num_augmentations)
 
     # Expand non-prefer GT: (B, 3, H, W) -> (B*N, 3, H, W)
     gt_non_prefer = expand_to_BN(batch['gt_non_prefer'], N=num_augmentations)
+
+    # DEBUG: Check if expanded GTs are identical AFTER expansion
+    if torch.equal(gt_prefer, gt_non_prefer):
+        print("[BUG] preprocess_pps_batch_with_upe: gt_prefer == gt_non_prefer AFTER expand!")
+        print(f"  User IDs: {batch['user_id']}")
+        mse_after = F.mse_loss(gt_prefer, gt_non_prefer).item()
+        print(f"  MSE: {mse_after}")
 
     # NEW: Expand UPE: (B, 16, 1280) -> (B*N, 16, 1280)
     # Each augmentation of a sample gets the same UPE

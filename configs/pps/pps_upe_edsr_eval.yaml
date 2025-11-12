@@ -1,9 +1,6 @@
 # =============================================================================
-# Unified UPE Configuration with SwinIR Encoder (SMALL CONFIG)
+# Unified UPE Configuration with EDSR Encoder
 # =============================================================================
-# Experiment: train_pps_upe_swinir
-# Validation Config: configs/validate-upe/validate_upe_swinir.yaml
-#
 # 이 config는 train_upe.py와 validate_upe.py 모두에서 사용됩니다.
 #
 # 🆕 NEW FEATURES (UPE System - docs/plan/ 참고):
@@ -12,23 +9,9 @@
 # - Training: Curriculum learning → Mixed-user batching (1.5-2× 속도 향상)
 # - Validation: Test-time training (1000 iter) → Direct inference (10× 속도 향상)
 #
-# ⚙️ SWINIR-SPECIFIC NOTES (SMALL CONFIG):
-# - Transformer-based encoder with depths=[3,3,3,3,3,3] (smaller, faster)
-# - Decoder: hidden_dim=384, blocks=24 (medium capacity)
-# - Expected PSNR: ~23.7 dB
-# - Training time: ~15-20 min/epoch
-# - crop_size=64 (window_size=8의 배수여야 함)
-# - Learning rate: 5e-4 (transformer 특성)
-#
 # Usage:
-#   # Training
-#   python train_upe.py --config configs/pps/upe_swinir.yaml --name my_exp --gpu 0
-#
-#   # Validation (별도 실행 권장)
-#   python validate_upe.py \
-#     --config configs/validate-upe/validate_upe_swinir.yaml \
-#     --checkpoint save/my_exp/checkpoint_best.pth \
-#     --gpu 0
+#   python train_upe.py --config configs/pps/upe_edsr.yaml --name my_exp --gpu 0
+#   python validate_upe.py --config configs/pps/upe_edsr.yaml --checkpoint save/my_exp/epoch-last.pth --gpu 0
 # =============================================================================
 
 # =============================================================================
@@ -38,26 +21,14 @@
 model:
   name: hiif-global-upe  # 🆕 Global decoder with UPE injection (NOT hiif-pps!)
   args:
-    # Input crop size (used to auto-set SwinIR img_size)
-    crop_size: 64  # Should match train_dataset.wrapper.args.crop_size
-
-    # Encoder specification
+    # Encoder specification (same as baseline)
     encoder_spec:
-      name: swinir
+      name: edsr-baseline
       args:
         no_upsampling: true
-        # SwinIR configurable parameters:
-        # img_size: auto-set from crop_size (128) - DO NOT override!
-        embed_dim: 180              # Feature embedding dimension
-        depths: [6, 6, 6, 6, 6, 6]  # Number of blocks per stage (6 stages)
-        num_heads: [6, 6, 6, 6, 6, 6]  # Attention heads per stage
-        window_size: 8              # Window size for attention (⚠️ crop_size must be multiple of this!)
-        mlp_ratio: 2.0              # MLP expansion ratio
-        # Regularization parameters:
-        drop_rate: 0.0              # Dropout rate
-        attn_drop_rate: 0.0         # Attention dropout rate
-        drop_path_rate: 0.1         # Drop path rate (stochastic depth)
-        # Output: (B, 180, H, W) features
+        n_resblocks: 32
+        n_feats: 256
+        # Output: (B, 64, H, W) features
 
     # 🆕 INCREASED DECODER CAPACITY (baseline: hidden_dim=256, blocks=16)
     # Global decoder는 모든 users를 처리해야 하므로 capacity 증가
@@ -74,12 +45,12 @@ model:
     # Raw UPE (16, 1280) → Processed UPE (512,)
     upe_processor_config:
       # input_dim: Auto-calculated from upe_config (content_model + color_model dimensions)
-      projection_dim: 256   # 🆕 Learnable per-vector projection (addresses normalization issues)
+      projection_dim: 512   # 🆕 Learnable per-vector projection (addresses normalization issues)
       hidden_dim: 512       # Transformer internal dimension
       output_dim: 256       # Output dimension (upe_dim)
-      num_layers: 3         # 🆕 Shallow transformer (16 vectors는 작으므로 충분)
+      num_layers: 6         # 🆕 Shallow transformer (16 vectors는 작으므로 충분)
       num_heads: 8          # Multi-head attention heads
-      dropout: 0.1          # Dropout rate (transformer에는 중요)
+      dropout: 0.1          # Dropout rate
       # Note: ffn_dim is hardcoded as hidden_dim * 4 = 2048
       # Note: activation is hardcoded as 'gelu'
 
@@ -89,7 +60,7 @@ upe_config:
   # Feature extractor 모델 선택 (고정 variant 사용)
   # Fixed variants: clip (ViT-B/16, 512-dim), dino (vitb16, 768-dim),
   #                 dinov2 (base, 768-dim), dinov3 (vitb16, 768-dim), sam (vit_b, 768-dim)
-  content_model: dinov2  # 🔬 Options: dino, dinov2, dinov3, clip, sam
+  content_model: sam  # 🔬 Options: dino, dinov2, dinov3, clip, sam
                          # DINOv3: Latest self-supervised vision model (Meta AI 2025)
                          # Better semantic/structural features than DINO v1
                          # 출력: (768,) per image (fixed variant: dinov3_vitb16)
@@ -150,10 +121,7 @@ train_dataset:
     name: pps-preference-pair  # Base preference pair dataset
     args:
       root_path: ./load/PPS/images
-
-      # 📁 TRAINING DATASET SELECTION (choose one):
-      response_dir: ./load/PPS/responses/train
-      # response_dir: ./load/PPS/responses/train     # ~100 users (for full training)
+      response_dir: ./load/PPS/responses/train 
 
       # ⚠️ Train/Val users are COMPLETELY DIFFERENT
       # No overlap between train and validation users!
@@ -162,9 +130,8 @@ train_dataset:
   wrapper:
     name: pps-color-augmented  # Color augmentation wrapper (UPE wrapper added in code)
     args:
-      crop_size: 64  # ⚠️ MUST be multiple of window_size (8)! MATCHES model.args.crop_size
-                      # Options: 64, 128, 192, 256
-                      # 128 권장 (SwinIR의 sweet spot)
+      crop_size: 128  # 🔬 Experiment range: 64 (fast), 128 (baseline), 256 (slow)
+                      # EDSR는 CNN이므로 128이면 충분
 
       augment: true   # 4-way HSV augmentation
       augment_params:
@@ -174,7 +141,6 @@ train_dataset:
         hue: 0.05        # HSV H channel ± 5% (작게 유지)
 
   batch_size: 4  # 2 samples × 4 augmented = 8 images per batch
-                 # ⚠️ SwinIR은 메모리를 더 많이 사용함!
                  # 🔬 GPU memory에 따라 조절: 1 (8GB), 2 (12GB), 4 (24GB)
 
   # 🆕 NO MORE SAMPLER!
@@ -185,40 +151,25 @@ train_dataset:
 optimizer:
   name: adam
   args:
-    lr: 1.e-4  # ⬆️ HIGHER than EDSR (1e-4)!
-               # Transformer는 일반적으로 더 높은 learning rate 필요
-               # 🔬 Options: 2e-4 (safe), 5e-4 (baseline), 1e-3 (fast but risky)
+    lr: 5.e-5  # 🔬 Learning rate: 5e-5 (safe), 1e-4 (baseline), 2e-4 (fast but risky)
     betas: [0.9, 0.999]  # Adam momentum parameters
-    weight_decay: 0.0    # Optional: L2 regularization
-
-# Optional: Cosine LR with warmup (like original SwinIR training)
-# SwinIR는 warmup이 도움이 될 수 있음
-# 실험으로 결정 - 주석 해제 시 사용
-# lr_scheduler:
-#   name: cosine_with_warmup
-#   args:
-#     warmup_epochs: 10      # 10 epochs warmup
-#     warmup_lr_init: 1.e-6  # Initial LR for warmup
-#     lr_min: 1.e-6          # Minimum LR at end of cosine decay
-#     T_max: 200             # Total epochs (same as epoch_max)
+    weight_decay: 0.0    # Optional: L2 regularization (0.0 = no regularization)
 
 # Training duration
-epoch_max: 50  # 🔬 Full training: 200-500 epochs
+epoch_max: 10  # 🔬 Full training: 200-500 epochs
                 # Quick test: 50 epochs
                 # Pilot study: 100 epochs
-                # ⚠️ SwinIR는 수렴이 느릴 수 있음 (transformer 특성)
 
-epoch_val: 10   # Validate every 10 epochs (or 20 for longer training)
-epoch_save: 10  # Save checkpoint every 10 epochs
+epoch_val: 2   # Validate every 10 epochs
+epoch_save: 2  # Save checkpoint every 10 epochs
 
 # 🆕 DUAL GROUND TRUTH LOSS SCHEDULING
 # L_total = w_p × L1(pred, gt_prefer) + (1 - w_p) × L1(pred, gt_non_prefer)
 loss_schedule:
-  schedule_type: linear  # ⬆️ LINEAR for SwinIR (not exponential!)
-                         # Transformer는 linear schedule이 더 안정적
+  schedule_type: linear  # uniform/linear/exponential/logarithmic
   w_p_start: 0.5  # 초기: prefer/non_prefer 균등 (50%/50%)
-  w_p_end: 2.0    # ⬆️ 최종: prefer 더 집중 (90%/10%) - EDSR보다 높게
-  # → 학습 초반: 둘 다 학습, 후반: prefer에 더 집중
+  w_p_end: 0.9    # 최종: prefer 집중 (80%/20%)
+  # → 학습 초반: 둘 다 학습, 후반: prefer에 집중
 
 # =============================================================================
 # Validation Configuration (validate_upe.py only)
@@ -229,10 +180,7 @@ val_dataset:
     name: pps-preference-pair  # Base preference pair dataset
     args:
       root_path: ./load/PPS/images
-
-      # 📁 VALIDATION DATASET SELECTION (choose one):
-      response_dir: ./load/PPS/responses/validation
-      # response_dir: ./load/PPS/responses/validation    # ~20-30 users (for thorough evaluation)
+      response_dir: ./load/PPS/responses/evaluation  # 🆕 EVALUATION dataset
 
       # ⚠️ Validation users는 train과 완전히 다름!
       # 동일 user 사용 금지!
@@ -241,20 +189,15 @@ val_dataset:
   wrapper:
     name: pps-color-augmented  # Color augmentation wrapper (UPE wrapper added in code)
     args:
-      crop_size: 64  # ⚠️ MUST match training crop_size for SwinIR! MATCHES model.args.crop_size
-                      # SwinIR의 positional encoding이 crop_size에 의존
+      crop_size: 128  # Validation에서는 full-image로 평가하지만
+                      # UPE 추출 시에는 training과 동일한 crop_size 사용
       augment: false  # 🔒 Validation: No augmentation
 
   batch_size: 4
 
-
-
 # 🆕 VALIDATION CONFIGURATION (Direct Inference!)
-# NOTE: For thorough validation, use validate_upe.py with configs/validate-upe/validate_upe_swinir.yaml
 validation:
-  # 👥 NUMBER OF VALIDATION USERS
-  num_val_users: null  # null = all validation users (9 for toy, ~20-30 for full)
-                       # or specify number (e.g., 5 for quick validation during training)
+  num_val_users: null  # null = all validation users, or specify number (e.g., 5 for quick test)
 
   # 🆕 NO MORE TEST-TIME TRAINING!
   # Baseline: 각 user마다 새 decoder 생성 → 1000 iterations 학습 → 평가
@@ -262,24 +205,36 @@ validation:
   # → 10× faster validation
   # num_upe_pairs is defined in upe_config
 
-  # 📊 EVALUATION SAMPLES
-  num_eval_pairs: 8   # 평가에 사용할 preference pairs 수
-                        # -1: 모든 pairs 사용 (full evaluation) - RECOMMENDED
+  num_eval_pairs: -1  # 평가에 사용할 preference pairs 수
+                        # -1: 모든 pairs 사용 (full evaluation)
                         # 16: JSON당 16 pairs 사용 (전체 평가)
-                        # N: N pairs 사용 (quick check)
+                        # N: N pairs 사용
 
-  # 🖼️ EVALUATION MODE
+  # 🆕 AUGMENTATION MODES
+  aug_modes: ['clean']  # List of augmentation modes to test
+                        # 'clean': No augmentation (original images)
+                        # 'aug': With color augmentation
+                        # Possible combinations: ['clean'], ['aug'], ['clean', 'aug']
+  num_aug_imgs: 1       # Number of augmentations per image (for 'aug' mode only, default: 1)
+                        # If > 1, multiple augmented versions are generated with deterministic seeds
+                        # Metrics are averaged across augmentations
+                        # Images are saved with aug index suffix
+
+# 🎲 RANDOM SEED FOR REPRODUCIBILITY (Optional)
+# Uncomment to enable deterministic sample selection during validation
+# random_seed: 42  # Integer seed for reproducible evaluation
+                   # When set, samples are shuffled deterministically before
+                   # splitting into UPE extraction (first N) and evaluation (rest)
+                   # Each user gets unique but reproducible shuffle
+                   # If not set, uses default sample order (still deterministic)
+
+  # Full-image evaluation settings
   eval_mode: full  # patch/full
-                    # patch: Patch-based evaluation (메모리 효율적) - SwinIR 권장!
-                    # full: Full-image evaluation (느리고 OOM 위험)
+                    # patch: Patch-based evaluation (메모리 효율적)
+                    # full: Full-image evaluation (느리지만 정확)
 
-  patch_size: 64   # ⚠️ MUST be multiple of window_size (8)! MATCHES crop_size
-                    # Options: 64 (default), 128, 192, 256
-
-  stride: 32        # Stride for sliding window (overlap = patch_size - stride)
-                    # 🔬 stride 작을수록 정확하지만 느림:
-                    # 32 (slow, high quality), 64 (baseline), 96 (fast, lower quality)
-
+  patch_size: 128   # Patch size for patch-based evaluation
+  stride: 64        # Stride for sliding window (overlap = patch_size - stride)
   patch_batch_size: 16  # Number of patches to process in parallel (for GPU efficiency)
 
 # Metrics to compute
@@ -311,7 +266,7 @@ save_interval: null  # null: save at checkpoints only (10, 20, 30, ...)
 # - Shape mismatch
 # - Corrupted file
 # =============================================================================
-# DIMENSION FLOW SUMMARY (SwinIR)
+# DIMENSION FLOW SUMMARY
 # =============================================================================
 # 📐 Complete dimension flow for reference:
 #
@@ -321,8 +276,8 @@ save_interval: null  # null: save at checkpoints only (10, 20, 30, ...)
 # [Training/Inference Phase - Batch]
 # Input: (B, 3, H, W)
 # UPE: (B, 512) [from cache]
-# ↓ Encoder (SwinIR)
-# Features: (B, 180, H_f, W_f)  # ⚠️ 180 not 64 (EDSR)!
+# ↓ Encoder (EDSR)
+# Features: (B, 64, H_f, W_f)
 # ↓ Freq Conv
 # Freq Features: (B, 384, H_f, W_f)
 # ↓ Grid Sampling (4 neighbors)
@@ -339,30 +294,18 @@ save_interval: null  # null: save at checkpoints only (10, 20, 30, ...)
 # =============================================================================
 
 # =============================================================================
-# MODEL PARAMETERS COMPARISON (SwinIR vs EDSR)
+# MODEL PARAMETERS COMPARISON
 # =============================================================================
-# Component              | EDSR-UPE           | SwinIR-UPE         | Change
-# -----------------------|--------------------|--------------------|---------
-# Encoder                | ~11.8M (EDSR)      | ~11.8M (SwinIR)    | ≈
-# Decoder (global)       | ~10M               | ~10M               | =
-# UPE Processor          | ~2.1M              | ~2.1M              | =
-# -----------------------|--------------------|--------------------|---------
-# Total                  | ~22M               | ~22M               | =
-# -----------------------|--------------------|--------------------|---------
-# Training time          | ~30min/epoch       | ~40min/epoch       | ⬆️ 33% slower
-# Memory usage           | ~6GB               | ~8GB               | ⬆️ 33% more
-# Quality (expected)     | Good (CNN)         | Better (Transformer)| ⬆️
-# Long-range modeling    | Limited (receptive)| Strong (attention) | ✅
-# =============================================================================
-
-# =============================================================================
-# SWINIR-SPECIFIC TIPS
-# =============================================================================
-# 1. crop_size MUST be multiple of window_size (8): 64, 128, 192, 256
-# 2. Use higher learning rate than EDSR (5e-4 vs 1e-4)
-# 3. Consider cosine LR schedule with warmup
-# 4. Use linear loss schedule (not exponential)
-# 5. Training 시간이 EDSR보다 30-40% 더 걸림
-# 6. Validation도 patch-based로 해야 OOM 방지
-# 7. SwinIR은 수렴이 느릴 수 있으므로 patience 필요
+# Component              | Baseline (PPS)      | UPE System         | Change
+# -----------------------|---------------------|--------------------|---------
+# Encoder                | ~11.8M (EDSR)       | ~11.8M (same)      | -
+# Decoder (user-specific)| 5.12M × 100 users   | -                  | ❌ Removed
+# Decoder (global)       | -                   | ~10M (1×)          | ✅ New
+# UPE Processor          | -                   | ~2.1M              | ✅ New
+# -----------------------|---------------------|--------------------|---------
+# Total                  | ~512M               | ~22M               | 🎉 96% ↓
+# Checkpoint size        | ~2GB (101 files)    | ~90MB (2 files)    | 🎉 95% ↓
+# GPU memory (training)  | ~8GB                | ~6GB               | 🎉 25% ↓
+# Iteration time         | ~300ms              | <200ms             | 🎉 1.5× ↑
+# Validation time (100u) | ~3 hours            | <20 min            | 🎉 10× ↑
 # =============================================================================

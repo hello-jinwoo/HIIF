@@ -44,44 +44,51 @@ class UPEConfigValidator:
 
     @staticmethod
     def _check_model_selection(config: Dict[str, Any]) -> None:
-        """Enforce content_model != color_model."""
+        """Validate model selection (content_model and color_model can be the same)."""
         upe_cfg = config['upe_config']
         content = upe_cfg['content_model']
         color = upe_cfg['color_model']
 
-        if content == color:
-            raise ValueError(
-                f"content_model and color_model must be different. "
-                f"Got both = '{content}'"
-            )
+        # Note: As of 2025-11-05 update, content_model and color_model CAN be the same
+        # They use different aggregation methods (average vs subtraction)
+        # So we only validate that the model names are valid
 
-        valid = ['clip', 'dino']
+        valid = ['clip', 'dino', 'dinov2', 'dinov3', 'sam']
         if content not in valid or color not in valid:
             raise ValueError(f"Models must be in {valid}, got content={content}, color={color}")
 
     @staticmethod
     def _check_dimensions(config: Dict[str, Any]) -> None:
-        """Check dimension consistency."""
-        upe_cfg = config['upe_config']
-        expected = {'clip': 512, 'dino': 768}
+        """Check dimension consistency (uses fixed variants per model)."""
+        from models.feature_extractors import get_feature_extractor_dim
 
+        upe_cfg = config['upe_config']
         content_name = upe_cfg['content_model']
         color_name = upe_cfg['color_model']
+
+        # Get expected dimensions from feature extractors (uses fixed variants)
+        try:
+            expected_content_dim = get_feature_extractor_dim(content_name)
+            expected_color_dim = get_feature_extractor_dim(color_name)
+        except ValueError as e:
+            raise ValueError(f"Invalid model configuration: {e}")
 
         # Check if dimensions are specified (optional)
         if 'content_dim' in upe_cfg:
             content_dim = upe_cfg['content_dim']
-            if content_dim != expected[content_name]:
-                warnings.warn(f"Content dim mismatch: {content_dim} != {expected[content_name]}")
+            if content_dim != expected_content_dim:
+                warnings.warn(f"Content dim mismatch: {content_dim} != {expected_content_dim}")
 
         if 'color_dim' in upe_cfg:
             color_dim = upe_cfg['color_dim']
-            if color_dim != expected[color_name]:
-                warnings.warn(f"Color dim mismatch: {color_dim} != {expected[color_name]}")
+            if color_dim != expected_color_dim:
+                warnings.warn(f"Color dim mismatch: {color_dim} != {expected_color_dim}")
 
     @staticmethod
     def _check_data_config(config: Dict[str, Any]) -> None:
-        """Check data configuration consistency."""
+        """Check data configuration consistency (uses fixed variants per model)."""
+        from models.feature_extractors import get_feature_extractor_dim
+
         if 'train_dataset' not in config:
             return  # Validation config might not have train_dataset
 
@@ -94,19 +101,25 @@ class UPEConfigValidator:
             if 'upe_processor_config' in model_args:
                 processor_cfg = model_args['upe_processor_config']
 
-                # Check input_dim matches expected UPE dimension
+                # Check input_dim matches expected UPE dimension (if specified)
                 content_name = upe_cfg['content_model']
                 color_name = upe_cfg['color_model']
-                expected_dims = {'clip': 512, 'dino': 768}
-                expected_input_dim = expected_dims[content_name] + expected_dims[color_name]
+
+                try:
+                    content_dim = get_feature_extractor_dim(content_name)
+                    color_dim = get_feature_extractor_dim(color_name)
+                    expected_input_dim = content_dim + color_dim
+                except ValueError as e:
+                    raise ValueError(f"Invalid model configuration: {e}")
 
                 if 'input_dim' in processor_cfg:
                     actual_input_dim = processor_cfg['input_dim']
                     if actual_input_dim != expected_input_dim:
-                        raise ValueError(
+                        warnings.warn(
                             f"UPE processor input_dim mismatch: "
-                            f"expected {expected_input_dim} (content={expected_dims[content_name]} + "
-                            f"color={expected_dims[color_name]}), got {actual_input_dim}"
+                            f"expected {expected_input_dim} (content={content_dim} + "
+                            f"color={color_dim}), got {actual_input_dim}. "
+                            f"This will be auto-corrected during training/validation."
                         )
 
     @staticmethod
