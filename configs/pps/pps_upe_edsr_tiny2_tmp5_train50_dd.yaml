@@ -121,7 +121,7 @@ train_dataset:
     name: pps-preference-pair  # Base preference pair dataset
     args:
       root_path: ./load/PPS/images
-      response_dir: ./load/PPS/responses/train100
+      response_dir: ./load/PPS/responses/train50
 
       # ⚠️ Train/Val users are COMPLETELY DIFFERENT
       # No overlap between train and validation users!
@@ -140,7 +140,7 @@ train_dataset:
         saturation: 0.1  # HSV S channel ± 10%
         hue: 0.05        # HSV H channel ± 5% (작게 유지)
 
-  batch_size: 64  # 2 samples × 4 augmented = 8 images per batch
+  batch_size: 32  # 2 samples × 4 augmented = 8 images per batch
                  # 🔬 GPU memory에 따라 조절: 1 (8GB), 2 (12GB), 4 (24GB)
 
   # 🆕 NO MORE SAMPLER!

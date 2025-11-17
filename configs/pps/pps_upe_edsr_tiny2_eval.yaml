@@ -70,7 +70,7 @@ upe_config:
                        # 출력: (512,) per image (fixed variant: ViT-B/16)
                        # ⚠️ content_model과 달라야 함!
 
-  num_pairs: 32        # 🔒 FIXED: UPE 추출에 사용할 preference pairs 수
+  num_pairs: 4        # 🔒 FIXED: UPE 추출에 사용할 preference pairs 수
                        # User당 M개 pairs 중 16개를 UPE용으로 사용
                        # 나머지 M-16개는 training/evaluation용
 
@@ -82,7 +82,7 @@ upe_config:
                        # User별로 고정된 seed 사용 (user_id + seed → hash)
                        # → 재현 가능한 실험
 
-  cache_dir: ./cache/upe/context4_n32  # UPE cache base directory (dataset-specific subdirs auto-created)
+  cache_dir: ./cache/upe/context6_n4  # UPE cache base directory (dataset-specific subdirs auto-created)
 
   use_dataset_subdirs: false  # 🆕 Use dataset-specific subdirectories (train/validation/evaluation)?
                                # true: cache/upe/{dataset_name}/{model_pair}/ (organized, need re-extraction per dataset)

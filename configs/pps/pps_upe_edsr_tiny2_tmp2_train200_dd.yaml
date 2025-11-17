@@ -140,7 +140,7 @@ train_dataset:
         saturation: 0.1  # HSV S channel ± 10%
         hue: 0.05        # HSV H channel ± 5% (작게 유지)
 
-  batch_size: 64  # 2 samples × 4 augmented = 8 images per batch
+  batch_size: 32  # 2 samples × 4 augmented = 8 images per batch
                  # 🔬 GPU memory에 따라 조절: 1 (8GB), 2 (12GB), 4 (24GB)
 
   # 🆕 NO MORE SAMPLER!
@@ -189,9 +189,9 @@ val_dataset:
   wrapper:
     name: pps-color-augmented  # Color augmentation wrapper (UPE wrapper added in code)
     args:
-      crop_size: 64  # Validation에서는 full-image로 평가하지만
+      crop_size: 128  # Validation에서는 full-image로 평가하지만
                       # UPE 추출 시에는 training과 동일한 crop_size 사용
-      augment: false  # 🔒 Validation: No augmentation
+      augment: true  # 🔒 Validation: No augmentation
 
   batch_size: 64
 
